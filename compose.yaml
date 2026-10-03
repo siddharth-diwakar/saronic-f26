@@ -1,0 +1,36 @@
+services:
+  sim:
+    build: .
+    image: saronic-isaac-sim:6.1.0
+    user: "1234:1234"
+    network_mode: host
+    environment:
+      ACCEPT_EULA: "Y"
+      PRIVACY_CONSENT: "Y"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    volumes:
+      - ./src:/workspace/src:ro
+      - ./assets:/workspace/assets:ro
+      - ./output:/workspace/output
+      - isaac_cache:/isaac-sim/.cache
+      - isaac_compute_cache:/isaac-sim/.nv/ComputeCache
+      - isaac_kit_cache:/isaac-sim/kit/cache
+      - isaac_logs:/isaac-sim/.nvidia-omniverse/logs
+      - isaac_config:/isaac-sim/.nvidia-omniverse/config
+      - isaac_data:/isaac-sim/.local/share/ov/data
+      - isaac_pkg:/isaac-sim/.local/share/ov/pkg
+
+volumes:
+  isaac_cache:
+  isaac_compute_cache:
+  isaac_kit_cache:
+  isaac_logs:
+  isaac_config:
+  isaac_data:
+  isaac_pkg:
