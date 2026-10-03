@@ -10,8 +10,8 @@ services:
       test: ["CMD-SHELL", "logdir=/isaac-sim/.nvidia-omniverse/logs/Kit; [ -d \"$$logdir\" ] && latest=$$(ls -t \"$$logdir\"/*/*/kit_*.log 2>/dev/null | head -1) && [ -n \"$$latest\" ] && grep -q AppReady \"$$latest\""]
       interval: 30s
       timeout: 10s
-      start_period: 180s
-      retries: 3
+      start_period: 600s
+      retries: 5
     restart: unless-stopped
 
   web-viewer:

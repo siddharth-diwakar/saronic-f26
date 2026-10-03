@@ -2,7 +2,7 @@
 
 [Launch on NVIDIA Brev](https://brev.nvidia.com/launchable/deploy?launchableID=env-3KBxE5OmaRkasfoXEDUhXeFleBL)
 
-Clone this repository onto a NVIDIA Brev **Linux GPU instance** and run a headless Isaac Sim scene inside Docker. The first scene places a visual placeholder boat at a requested world position and writes a USD file. It does not yet simulate buoyancy, propulsion, or sensors.
+Run a headless Isaac Sim scene inside Docker on a NVIDIA Brev **Linux GPU instance**. The first scene places a visual placeholder boat at a requested world position and writes a USD file. It does not yet simulate buoyancy, propulsion, or sensors.
 
 ## Host requirements
 
@@ -12,9 +12,11 @@ Clone this repository onto a NVIDIA Brev **Linux GPU instance** and run a headle
 
 ## Run on Brev
 
-The [Brev Launchable](https://brev.nvidia.com/launchable/deploy?launchableID=env-3KBxE5OmaRkasfoXEDUhXeFleBL) uses VM mode on one L40S GPU. Brev checks out this repository at `~/saronic-f26`; the setup script selects the pinned `brev-v1` tag, checks GPU access, builds the Isaac Sim container, creates a smoke scene using the optional `BOAT_X` and `BOAT_Y` launch parameters (both default to `0`), and starts a browser viewer. The script is in [scripts/brev-setup.sh](scripts/brev-setup.sh). Creating the Launchable does not start a paid GPU instance; deployment happens when you select **Deploy Launchable**.
+The [Brev Launchable](https://brev.nvidia.com/launchable/deploy?launchableID=env-3KBxE5OmaRkasfoXEDUhXeFleBL) uses VM mode on one L40S GPU. Brev checks out this repository at `~/saronic-f26`; the setup script selects the pinned `brev-v2` tag, checks GPU access, builds the Isaac Sim container, gives its non-root user write access to persistent caches and settings, creates a smoke scene using the optional `BOAT_X` and `BOAT_Y` launch parameters (both default to `0`), and starts a browser viewer. The script is in [scripts/brev-setup.sh](scripts/brev-setup.sh). Creating the Launchable does not start a paid GPU instance; deployment happens when you select **Deploy Launchable**.
 
 After the instance starts, open `http://<Brev-public-IP>:8210` in a Chromium-based browser. In the streamed Isaac Sim window, open `/workspace/output/boat_scene.usd` to view the deployed boat. The browser viewer needs TCP `8210` and `49100`, plus UDP `47998`, restricted to your IP in Brev. Jupyter remains available through Brev's authenticated secure link on port `8888`.
+
+For manual setup without the Launchable, clone the repository and run:
 
 ```bash
 git clone https://github.com/siddharth-diwakar/saronic-f26.git
@@ -25,7 +27,7 @@ cd saronic-f26
 
 The first run pulls and builds the pinned Isaac Sim image, so it takes longer. Later runs reuse the Docker image and named cache volumes. The scene is saved at `output/boat_scene.usd` on the host.
 
-Isaac Sim runs as UID `1234` inside the container. `run.sh` grants that user access to `output/` using an ACL when `setfacl` is available; otherwise it makes only the generated-output directory writable by all local users. Install Ubuntu's `acl` package if you prefer ACLs.
+Isaac Sim runs as UID `1234` inside the container. `run.sh` grants that user access to `output/` using an ACL when `setfacl` is available; otherwise it makes only the generated-output directory writable by all local users. It also prepares the named cache, log, and settings volumes once so Isaac Sim can write to them. Install Ubuntu's `acl` package if you prefer ACLs.
 
 To change the placement or heading:
 
@@ -48,7 +50,7 @@ The model is referenced beneath `/World/Boat/Model`, so its authored origin and 
 - `Dockerfile`, `compose.yaml`: pinned container runtime, GPU request, mounts, and persistent caches.
 - `compose.stream.yaml`, `streaming/web-viewer/`: long-running Isaac Sim WebRTC server and browser viewer, based on NVIDIA's official viewer setup.
 - `scripts/check-host.sh`: quick Brev host checks.
-- `scripts/run.sh`: build and run one scenario.
+- `scripts/run.sh`, `scripts/prepare-volumes.sh`: prepare writable volumes, then build and run one scenario.
 - `src/saronic_sim/cli.py`: scene generation entry point.
 - `assets/`: USD models you add later.
 - `output/`: generated scenes, ignored by Git.
