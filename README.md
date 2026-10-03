@@ -12,7 +12,9 @@ Clone this repository onto a NVIDIA Brev **Linux GPU instance** and run a headle
 
 ## Run on Brev
 
-The [Brev Launchable](https://brev.nvidia.com/launchable/deploy?launchableID=env-3KBxE5OmaRkasfoXEDUhXeFleBL) uses VM mode on one L40S GPU. Its setup script clones this feature branch, checks GPU access, builds the Isaac Sim container, and creates a smoke scene using the optional `BOAT_X` and `BOAT_Y` launch parameters (both default to `0`). The script is in [scripts/brev-setup.sh](scripts/brev-setup.sh). Creating the Launchable does not start a paid GPU instance; deployment happens when you select **Deploy Launchable**.
+The [Brev Launchable](https://brev.nvidia.com/launchable/deploy?launchableID=env-3KBxE5OmaRkasfoXEDUhXeFleBL) uses VM mode on one L40S GPU. Brev checks out this repository at `~/saronic-f26`; the setup script checks GPU access, builds the Isaac Sim container, and creates a smoke scene using the optional `BOAT_X` and `BOAT_Y` launch parameters (both default to `0`). The script is in [scripts/brev-setup.sh](scripts/brev-setup.sh). Creating the Launchable does not start a paid GPU instance; deployment happens when you select **Deploy Launchable**.
+
+The Launchable exposes Jupyter through Brev's authenticated secure link on port `8888`. The boat command runs headlessly and exits after saving USD, so it does not expose WebRTC streaming ports. A live viewport will need a separate Isaac Sim streaming service and Brev network rules for TCP `49100` and UDP `47998` (plus TCP `8210` if using NVIDIA's browser viewer), restricted to the viewer's IP.
 
 ```bash
 git clone https://github.com/siddharth-diwakar/saronic-f26.git
