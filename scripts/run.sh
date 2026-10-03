@@ -11,4 +11,5 @@ else
   chmod a+rwx output
 fi
 docker compose build sim
+./scripts/prepare-volumes.sh
 docker compose run --rm sim "$@"
