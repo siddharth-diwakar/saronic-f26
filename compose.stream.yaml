@@ -1,0 +1,29 @@
+services:
+  sim:
+    working_dir: /isaac-sim
+    entrypoint: ["/isaac-sim/runheadless.sh"]
+    command:
+      - "--/exts/omni.kit.livestream.app/primaryStream/publicIp=${ISAACSIM_HOST:?Set ISAACSIM_HOST to the Brev public IP}"
+      - "--/exts/omni.kit.livestream.app/primaryStream/signalPort=49100"
+      - "--/exts/omni.kit.livestream.app/primaryStream/streamPort=47998"
+    healthcheck:
+      test: ["CMD-SHELL", "logdir=/isaac-sim/.nvidia-omniverse/logs/Kit; [ -d \"$$logdir\" ] && latest=$$(ls -t \"$$logdir\"/*/*/kit_*.log 2>/dev/null | head -1) && [ -n \"$$latest\" ] && grep -q AppReady \"$$latest\""]
+      interval: 30s
+      timeout: 10s
+      start_period: 180s
+      retries: 3
+    restart: unless-stopped
+
+  web-viewer:
+    build:
+      context: ./streaming/web-viewer
+      network: host
+      args:
+        ISAACSIM_HOST: ${ISAACSIM_HOST:?Set ISAACSIM_HOST to the Brev public IP}
+        ISAACSIM_SIGNAL_PORT: "49100"
+        ISAACSIM_STREAM_PORT: "47998"
+    network_mode: host
+    depends_on:
+      sim:
+        condition: service_healthy
+    restart: unless-stopped
