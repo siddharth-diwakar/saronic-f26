@@ -12,9 +12,9 @@ Clone this repository onto a NVIDIA Brev **Linux GPU instance** and run a headle
 
 ## Run on Brev
 
-The [Brev Launchable](https://brev.nvidia.com/launchable/deploy?launchableID=env-3KBxE5OmaRkasfoXEDUhXeFleBL) uses VM mode on one L40S GPU. Brev checks out this repository at `~/saronic-f26`; the setup script checks GPU access, builds the Isaac Sim container, and creates a smoke scene using the optional `BOAT_X` and `BOAT_Y` launch parameters (both default to `0`). The script is in [scripts/brev-setup.sh](scripts/brev-setup.sh). Creating the Launchable does not start a paid GPU instance; deployment happens when you select **Deploy Launchable**.
+The [Brev Launchable](https://brev.nvidia.com/launchable/deploy?launchableID=env-3KBxE5OmaRkasfoXEDUhXeFleBL) uses VM mode on one L40S GPU. Brev checks out this repository at `~/saronic-f26`; the setup script selects the pinned `brev-v1` tag, checks GPU access, builds the Isaac Sim container, creates a smoke scene using the optional `BOAT_X` and `BOAT_Y` launch parameters (both default to `0`), and starts a browser viewer. The script is in [scripts/brev-setup.sh](scripts/brev-setup.sh). Creating the Launchable does not start a paid GPU instance; deployment happens when you select **Deploy Launchable**.
 
-The Launchable exposes Jupyter through Brev's authenticated secure link on port `8888`. The boat command runs headlessly and exits after saving USD, so it does not expose WebRTC streaming ports. A live viewport will need a separate Isaac Sim streaming service and Brev network rules for TCP `49100` and UDP `47998` (plus TCP `8210` if using NVIDIA's browser viewer), restricted to the viewer's IP.
+After the instance starts, open `http://<Brev-public-IP>:8210` in a Chromium-based browser. In the streamed Isaac Sim window, open `/workspace/output/boat_scene.usd` to view the deployed boat. The browser viewer needs TCP `8210` and `49100`, plus UDP `47998`, restricted to your IP in Brev. Jupyter remains available through Brev's authenticated secure link on port `8888`.
 
 ```bash
 git clone https://github.com/siddharth-diwakar/saronic-f26.git
@@ -46,6 +46,7 @@ The model is referenced beneath `/World/Boat/Model`, so its authored origin and 
 ## Repo layout
 
 - `Dockerfile`, `compose.yaml`: pinned container runtime, GPU request, mounts, and persistent caches.
+- `compose.stream.yaml`, `streaming/web-viewer/`: long-running Isaac Sim WebRTC server and browser viewer, based on NVIDIA's official viewer setup.
 - `scripts/check-host.sh`: quick Brev host checks.
 - `scripts/run.sh`: build and run one scenario.
 - `src/saronic_sim/cli.py`: scene generation entry point.
