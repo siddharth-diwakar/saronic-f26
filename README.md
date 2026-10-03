@@ -1,5 +1,7 @@
 # Saronic Isaac Sim starter
 
+[Launch on NVIDIA Brev](https://brev.nvidia.com/launchable/deploy?launchableID=env-3KBxE5OmaRkasfoXEDUhXeFleBL)
+
 Clone this repository onto a NVIDIA Brev **Linux GPU instance** and run a headless Isaac Sim scene inside Docker. The first scene places a visual placeholder boat at a requested world position and writes a USD file. It does not yet simulate buoyancy, propulsion, or sensors.
 
 ## Host requirements
@@ -9,6 +11,8 @@ Clone this repository onto a NVIDIA Brev **Linux GPU instance** and run a headle
 - Enough disk space for the large Isaac Sim image and its persistent caches.
 
 ## Run on Brev
+
+The [Brev Launchable](https://brev.nvidia.com/launchable/deploy?launchableID=env-3KBxE5OmaRkasfoXEDUhXeFleBL) uses VM mode on one L40S GPU. Its setup script clones this feature branch, checks GPU access, builds the Isaac Sim container, and creates a smoke scene using the optional `BOAT_X` and `BOAT_Y` launch parameters (both default to `0`). The script is in [scripts/brev-setup.sh](scripts/brev-setup.sh). Creating the Launchable does not start a paid GPU instance; deployment happens when you select **Deploy Launchable**.
 
 ```bash
 git clone https://github.com/siddharth-diwakar/saronic-f26.git
