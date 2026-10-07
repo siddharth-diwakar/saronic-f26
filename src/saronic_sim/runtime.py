@@ -2,6 +2,7 @@
 import csv
 import json
 import time
+import traceback
 from pathlib import Path
 
 
@@ -25,6 +26,8 @@ def run(config, output, stream=False, duration=None, throttle=0, steering=0, rec
         from scene import build_scene
         from hydrodynamics import forces
         from cameras import CameraRecorder
+        from physics import attach_boat
+        from isaacsim.core.experimental.utils import stage as stage_utils
         np.random.seed(config["simulation"]["seed"])
         stage, paths = build_scene(config, boat_usd)
         if not stage.GetRootLayer().Export(str(output / "harbor_scene.usda")):
@@ -37,12 +40,8 @@ def run(config, output, stream=False, duration=None, throttle=0, steering=0, rec
         RenderingManager.set_dt(1/config["simulation"]["render_hz"])
         timeline = omni.timeline.get_timeline_interface()
         timeline.play()
-        RenderingManager.render()
-        sim_view = tensors.create_simulation_view("numpy")
-        sim_view.set_subspace_roots("/")
-        body = sim_view.create_rigid_body_view("/World/Boat")
-        if body.count != 1:
-            raise RuntimeError("Expected exactly one boat rigid body")
+        sim_view, body = attach_boat(SimulationManager, RenderingManager, tensors, stage_utils.get_stage_id(stage))
+        print("HarborPhysicsReady: USD stage attached; boat rigid body available", flush=True)
         indices = np.array([0], dtype=np.uint32)
         initial_transform = body.get_transforms().copy()
         controls = {"throttle": throttle, "steering": steering, "reset": False}
@@ -76,8 +75,6 @@ def run(config, output, stream=False, duration=None, throttle=0, steering=0, rec
         # Warm up assets, render products, and streaming before marking readiness.
         for _ in range(20):
             RenderingManager.render()
-        ready.write_text("Harbor runtime ready\n")
-        print(f"HarborReady: scenario loaded; output={run_output}", flush=True)
         dt = 1/config["simulation"]["physics_hz"]
         render_every = int(config["simulation"]["physics_hz"]/config["simulation"]["render_hz"])
         elapsed, step, frame, next_record = 0.0, 0, 0, 0.0
@@ -88,10 +85,7 @@ def run(config, output, stream=False, duration=None, throttle=0, steering=0, rec
             writer.writerow(["time", "x", "y", "z", "qx", "qy", "qz", "qw", "vx", "vy", "vz", "wx", "wy", "wz", "throttle", "steering"])
             while app.is_running() and (duration is None or elapsed < duration):
                 if stopped and timeline.is_playing():
-                    RenderingManager.render()
-                    sim_view = tensors.create_simulation_view("numpy")
-                    sim_view.set_subspace_roots("/")
-                    body = sim_view.create_rigid_body_view("/World/Boat")
+                    sim_view, body = attach_boat(SimulationManager, RenderingManager, tensors, stage_utils.get_stage_id(stage))
                     stopped = False
                 if not timeline.is_playing():
                     stopped = stopped or timeline.is_stopped()
@@ -113,6 +107,9 @@ def run(config, output, stream=False, duration=None, throttle=0, steering=0, rec
                 SimulationManager.step(update_fabric=SimulationManager.is_fabric_enabled())
                 if render:
                     RenderingManager.render()
+                    if step == 0:
+                        ready.write_text("Harbor runtime ready\n")
+                        print(f"HarborReady: first physics step completed; output={run_output}", flush=True)
                 elapsed += dt
                 step += 1
                 if render and elapsed >= next_record:
@@ -129,6 +126,10 @@ def run(config, output, stream=False, duration=None, throttle=0, steering=0, rec
                     if remaining > 0:
                         time.sleep(min(remaining, dt))
         print(f"Harbor run finished: {elapsed:.2f}s; trajectory={run_output / 'trajectory.csv'}", flush=True)
+    except Exception:
+        # SimulationApp shutdown may take minutes; report the cause immediately.
+        traceback.print_exc()
+        raise
     finally:
         ready.unlink(missing_ok=True)
         if recorder:
