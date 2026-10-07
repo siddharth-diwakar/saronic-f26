@@ -1,0 +1,16 @@
+{
+  "boat": {
+    "length": 4.0, "width": 1.6, "height": 0.8, "mass": 650.0,
+    "position": [0.0, 0.0, 0.2984375], "heading": 0.0,
+    "max_thrust": 450.0,
+    "linear_drag": [100.0, 450.0, 800.0],
+    "quadratic_drag": [100.0, 400.0, 500.0],
+    "angular_drag": [700.0, 1000.0, 600.0]
+  },
+  "water": {"level": 0.0, "density": 1000.0, "current": [0.0, 0.0, 0.0]},
+  "simulation": {"physics_hz": 120, "render_hz": 30, "record_hz": 5, "duration": 30, "seed": 42},
+  "cameras": [
+    {"name": "Forward", "position": [1.2, 0.0, 1.0], "target": [12.0, 0.0, 0.5], "resolution": [640, 360], "focal_length": 18.0},
+    {"name": "Mast", "position": [-0.6, 0.0, 2.2], "target": [8.0, 0.0, 0.0], "resolution": [640, 360], "focal_length": 14.0}
+  ]
+}
