@@ -1,15 +1,13 @@
 #!/bin/bash
 set -euo pipefail
 
-repo_dir="${HOME}/saronic-f26"
+repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 if [[ ! -f "$repo_dir/compose.yaml" ]]; then
   echo "Brev's source checkout is missing at $repo_dir." >&2
   exit 1
 fi
 
-git -C "$repo_dir" fetch origin tag brev-v2
-git -C "$repo_dir" switch --detach brev-v2
 cd "$repo_dir"
 ./scripts/check-host.sh
 ./scripts/run.sh deploy boat --x "${BOAT_X:-0}" --y "${BOAT_Y:-0}"

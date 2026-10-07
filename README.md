@@ -12,9 +12,53 @@ Run a headless Isaac Sim scene inside Docker on a NVIDIA Brev **Linux GPU instan
 
 ## Run on Brev
 
-The [Brev Launchable](https://brev.nvidia.com/launchable/deploy?launchableID=env-3KBxE5OmaRkasfoXEDUhXeFleBL) uses VM mode on one L40S GPU. Brev checks out this repository at `~/saronic-f26`; the setup script selects the pinned `brev-v2` tag, checks GPU access, builds the Isaac Sim container, gives its non-root user write access to persistent caches and settings, creates a smoke scene using the optional `BOAT_X` and `BOAT_Y` launch parameters (both default to `0`), and starts a browser viewer. The script is in [scripts/brev-setup.sh](scripts/brev-setup.sh). Creating the Launchable does not start a paid GPU instance; deployment happens when you select **Deploy Launchable**.
+The [Brev Launchable](https://brev.nvidia.com/launchable/deploy?launchableID=env-3KBxE5OmaRkasfoXEDUhXeFleBL) uses VM mode on one L40S GPU. Brev checks out this repository at `~/saronic-f26`; the bootstrap selects `SARONIC_REF` (default `main`), then the selected revision’s setup script checks GPU access, builds the Isaac Sim container, gives its non-root user write access to persistent caches and settings, creates a smoke scene using the optional `BOAT_X` and `BOAT_Y` launch parameters (both default to `0`), and starts a browser viewer. The script is in [scripts/brev-setup.sh](scripts/brev-setup.sh). Creating the Launchable does not start a paid GPU instance; deployment happens when you select **Deploy Launchable**.
 
 After the instance starts, open `http://<Brev-public-IP>:8210` in a Chromium-based browser. In the streamed Isaac Sim window, open `/workspace/output/boat_scene.usd` to view the deployed boat. The browser viewer needs TCP `8210` and `49100`, plus UDP `47998`, restricted to your IP in Brev. Jupyter remains available through Brev's authenticated secure link on port `8888`.
+
+### Select a feature branch or release
+
+The Launchable has a string parameter **SARONIC_REF**, defaulting to `main`.
+At deployment, enter a branch such as `tanush/boat-harbor-simulation`, or a tag
+such as `brev-v2`. Use `refs/heads/<branch>` or `refs/tags/<tag>` if both have the
+same name. Invalid or missing revisions fail startup instead of falling back.
+
+Brev supplies the source checkout at `~/saronic-f26`. The VM setup script is the
+small bootstrap in [scripts/brev-bootstrap.sh](scripts/brev-bootstrap.sh): it
+fetches the selected revision, checks it out with a detached HEAD, logs the
+commit, and executes **that revision's** `scripts/brev-setup.sh`. It refuses to
+replace a checkout with local changes. It does not clone the repository again.
+The optional `SARONIC_REPO_DIR` overrides the checkout location for manual use.
+
+For manual selection on an existing instance:
+
+```bash
+SARONIC_REF=tanush/boat-harbor-simulation bash scripts/brev-bootstrap.sh
+```
+
+Keep Docker setup, volume preparation, scene generation, and simulator startup
+in `scripts/brev-setup.sh`. That script runs the selected checkout and must not
+switch revisions. Future startup changes require a repo PR; the Launchable
+bootstrap only needs editing if this entry-point contract changes. Brev GPU,
+ports, Git source, and parameter definitions remain Launchable settings.
+
+The revision-selection refactor must be merged into `main` and included in
+feature branches to guarantee this behavior. Older revisions may have setup
+scripts that select their own pinned revision. In particular, the original
+`brev-v2` startup selects `brev-v2` itself. Rebase new feature branches on the
+refactor before using them through this bootstrap.
+
+To configure a Launchable once: keep this repository as the Git source, add
+`SARONIC_REF` as a string parameter with default `main`, and paste the exact
+contents of `scripts/brev-bootstrap.sh` into its VM setup script. This inline
+bootstrap can select a revision even when Brev's initial checkout predates the
+bootstrap file. Afterward only the deployment parameter changes for a test.
+
+Run the bootstrap's local Git-fixture checks with:
+
+```bash
+bash tests/test_brev_bootstrap.sh
+```
 
 For manual setup without the Launchable, clone the repository and run:
 
@@ -49,6 +93,8 @@ The model is referenced beneath `/World/Boat/Model`, so its authored origin and 
 
 - `Dockerfile`, `compose.yaml`: pinned container runtime, GPU request, mounts, and persistent caches.
 - `compose.stream.yaml`, `streaming/web-viewer/`: long-running Isaac Sim WebRTC server and browser viewer, based on NVIDIA's official viewer setup.
+- `scripts/brev-bootstrap.sh`: minimal Launchable revision selector.
+- `scripts/brev-setup.sh`: startup logic executed from the selected checkout.
 - `scripts/check-host.sh`: quick Brev host checks.
 - `scripts/run.sh`, `scripts/prepare-volumes.sh`: prepare writable volumes, then build and run one scenario.
 - `src/saronic_sim/cli.py`: scene generation entry point.
