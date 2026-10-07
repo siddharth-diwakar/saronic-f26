@@ -42,6 +42,14 @@ switch revisions. Future startup changes require a repo PR; the Launchable
 bootstrap only needs editing if this entry-point contract changes. Brev GPU,
 ports, Git source, and parameter definitions remain Launchable settings.
 
+A temporary inline fallback handles revisions without `scripts/brev-setup.sh`: it
+runs the existing host checks, placement scene generator, and streaming Compose
+files from the selected checkout. It requires those starter files, preserves
+`BOAT_X`/`BOAT_Y`, and does not change the selected revision. A present startup
+script always takes precedence; an error in that script is not masked by the
+fallback. Remove this fallback once the refactor and test branches include the
+repo entry point.
+
 The revision-selection refactor must be merged into `main` and included in
 feature branches to guarantee this behavior. Older revisions may have setup
 scripts that select their own pinned revision. In particular, the original
