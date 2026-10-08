@@ -6,9 +6,12 @@ Sim **6.1.0**. The default scene needs no external model downloads.
 
 ## Run this feature on an existing Brev instance
 
-The existing [Brev Launchable](https://brev.nvidia.com/launchable/deploy?launchableID=env-3KBxE5OmaRkasfoXEDUhXeFleBL)
-still selects the older `brev-v2` starter. To try this feature, open a terminal
-on your GPU instance and run:
+The [Brev Launchable](https://brev.nvidia.com/launchable/deploy?launchableID=env-3KBxE5OmaRkasfoXEDUhXeFleBL)
+accepts a **SARONIC_REF** string parameter, defaulting to `main`. Enter
+`tanush/boat-harbor-simulation` to test this feature before it merges. After
+merging, the default `main` starts the harbor too.
+
+To update an existing GPU instance manually, open its terminal and run:
 
 ```bash
 cd ~/saronic-f26
@@ -35,11 +38,35 @@ The ports remain TCP `8210`, TCP `49100`, and UDP `47998`, restricted to your IP
 in Brev. Use the instance's current address; it can change after recreation.
 Jupyter remains on the existing authenticated Brev link at port `8888`.
 
-For a fresh Launchable, configure its Git source as this repository and its
-setup command to run `bash ~/saronic-f26/scripts/brev-setup.sh` from this feature
-revision. `SARONIC_REF` selects a tag or branch, defaulting to
-`tanush/boat-harbor-simulation` during feature bring-up. Brev supplies the
-checkout; the setup script fetches the revision without cloning again.
+### Branch selection and startup
+
+Brev supplies one source checkout at `~/saronic-f26`. The inline Launchable
+script is [scripts/brev-bootstrap.sh](scripts/brev-bootstrap.sh): it fetches
+`SARONIC_REF`, checks out that revision with a detached HEAD, logs the commit,
+and executes that revision's `scripts/brev-setup.sh`. The setup script checks
+the host, prepares containers, and starts the harbor; it does not switch
+revisions or clone again. Local changes cause the bootstrap to refuse checkout.
+
+Use a branch or tag, or `refs/heads/<branch>` / `refs/tags/<tag>` to disambiguate
+names. Invalid or missing revisions fail startup. `SARONIC_REPO_DIR` optionally
+overrides the checkout path for manual use. Older setup scripts may select their
+own pinned revision; new feature branches should include this bootstrap refactor.
+
+For manual branch selection on an existing instance:
+
+```bash
+SARONIC_REF=tanush/boat-harbor-simulation bash scripts/brev-bootstrap.sh
+```
+
+To configure a fresh Launchable, keep this repository as the Git source, add
+`SARONIC_REF` with default `main`, and paste the exact bootstrap script into the
+VM setup script. Future startup changes belong in the repository's setup script;
+GPU, port, source, and parameter definitions remain Launchable settings.
+
+The bootstrap retains a temporary placement-scene fallback for older revisions
+without `scripts/brev-setup.sh`. A present setup script always takes precedence,
+and its failures are reported. The fallback can be removed once the required
+revisions all include the entry point.
 
 Host requirements: supported NVIDIA GPU/driver with NVENC (such as L40S),
 Docker Engine and Compose, NVIDIA Container Toolkit, and sufficient disk space
@@ -100,6 +127,7 @@ Without Isaac Sim, install NumPy in your Python environment and run:
 
 ```bash
 PYTHONPATH=src/saronic_sim python3 -m unittest discover -s tests -v
+bash tests/test_brev_bootstrap.sh
 bash -n scripts/*.sh
 docker compose config --quiet
 ISAACSIM_HOST=127.0.0.1 docker compose -f compose.yaml -f compose.stream.yaml config --quiet
@@ -134,7 +162,7 @@ see [camera sensors](https://docs.isaacsim.omniverse.nvidia.com/6.1.0/sensors/is
 
 - `src/saronic_sim/`: CLI, scenario validation, scene authoring, force model, runtime, cameras.
 - `scenarios/`: versioned experiment settings.
-- `scripts/`: host checks, volume permissions, startup, and GPU smoke check.
+- `scripts/`: branch-selection bootstrap, repository startup, host checks, volume permissions, and GPU smoke check.
 - `compose*.yaml`, `Dockerfile`, `streaming/`: Docker and existing WebRTC viewer.
 - `assets/`: optional models; `output/`: generated data, ignored by Git.
 
