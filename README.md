@@ -1,112 +1,171 @@
-# Saronic Isaac Sim starter
+# Saronic Isaac Sim harbor
 
-[Launch on NVIDIA Brev](https://brev.nvidia.com/launchable/deploy?launchableID=env-3KBxE5OmaRkasfoXEDUhXeFleBL)
+A Docker environment for NVIDIA Brev with a procedural harbor, floating boat,
+differential thrust, two onboard cameras, and a browser viewer. Pinned to Isaac
+Sim **6.1.0**. The default scene needs no external model downloads.
 
-Run a headless Isaac Sim scene inside Docker on a NVIDIA Brev **Linux GPU instance**. The first scene places a visual placeholder boat at a requested world position and writes a USD file. It does not yet simulate buoyancy, propulsion, or sensors.
+## Run this feature on an existing Brev instance
 
-## Host requirements
+The [Brev Launchable](https://brev.nvidia.com/launchable/deploy?launchableID=env-3KBxE5OmaRkasfoXEDUhXeFleBL)
+accepts a **SARONIC_REF** string parameter, defaulting to `main`. Enter
+`tanush/boat-harbor-simulation` to test this feature before it merges. After
+merging, the default `main` starts the harbor too.
 
-- A GPU/driver supported by the pinned Isaac Sim image (currently `6.1.0`). Check the [Isaac Sim system requirements](https://docs.isaacsim.omniverse.nvidia.com/6.1.0/installation/requirements.html) before selecting the Brev instance.
-- Docker Engine, Docker Compose plugin, and NVIDIA Container Toolkit configured for Docker GPU access. See [NVIDIA's container installation guide](https://docs.isaacsim.omniverse.nvidia.com/6.1.0/installation/install_container.html).
-- Enough disk space for the large Isaac Sim image and its persistent caches.
+To update an existing GPU instance manually, open its terminal and run:
 
-## Run on Brev
+```bash
+cd ~/saronic-f26
+git fetch origin tanush/boat-harbor-simulation
+git switch --detach origin/tanush/boat-harbor-simulation
+export ISAACSIM_HOST="<current Brev public IP>"
+./scripts/check-host.sh
+./scripts/start-harbor.sh
+```
 
-The [Brev Launchable](https://brev.nvidia.com/launchable/deploy?launchableID=env-3KBxE5OmaRkasfoXEDUhXeFleBL) uses VM mode on one L40S GPU. Brev checks out this repository at `~/saronic-f26`; the bootstrap selects `SARONIC_REF` (default `main`), then the selected revision’s setup script checks GPU access, builds the Isaac Sim container, gives its non-root user write access to persistent caches and settings, creates a smoke scene using the optional `BOAT_X` and `BOAT_Y` launch parameters (both default to `0`), and starts a browser viewer. The script is in [scripts/brev-setup.sh](scripts/brev-setup.sh). Creating the Launchable does not start a paid GPU instance; deployment happens when you select **Deploy Launchable**.
+Open `http://<current Brev public IP>:8210` in a Chromium browser. The harbor
+loads and starts automatically. First startup can take several minutes while
+Isaac Sim creates caches. The viewer waits for the harbor runtime to be ready.
 
-After the instance starts, open `http://<Brev-public-IP>:8210` in a Chromium-based browser. In the streamed Isaac Sim window, open `/workspace/output/boat_scene.usd` to view the deployed boat. The browser viewer needs TCP `8210` and `49100`, plus UDP `47998`, restricted to your IP in Brev. Jupyter remains available through Brev's authenticated secure link on port `8888`.
+In **Boat controls**:
 
-### Select a feature branch or release
+- **Throttle:** 0 stops thrust; positive values move forward; negative values reverse.
+- **Steering:** positive turns port (+Y from the initial heading); negative turns starboard.
+- **Overview / Forward / Mast:** switch the viewport camera.
+- **Reset boat:** restores its initial pose and clears its velocity; slider values persist.
+- The normal Isaac Sim toolbar provides Play and Pause.
 
-The Launchable has a string parameter **SARONIC_REF**, defaulting to `main`.
-At deployment, enter a branch such as `tanush/boat-harbor-simulation`, or a tag
-such as `brev-v2`. Use `refs/heads/<branch>` or `refs/tags/<tag>` if both have the
-same name. Invalid or missing revisions fail startup instead of falling back.
+The ports remain TCP `8210`, TCP `49100`, and UDP `47998`, restricted to your IP
+in Brev. Use the instance's current address; it can change after recreation.
+Jupyter remains on the existing authenticated Brev link at port `8888`.
 
-Brev supplies the source checkout at `~/saronic-f26`. The VM setup script is the
-small bootstrap in [scripts/brev-bootstrap.sh](scripts/brev-bootstrap.sh): it
-fetches the selected revision, checks it out with a detached HEAD, logs the
-commit, and executes **that revision's** `scripts/brev-setup.sh`. It refuses to
-replace a checkout with local changes. It does not clone the repository again.
-The optional `SARONIC_REPO_DIR` overrides the checkout location for manual use.
+### Branch selection and startup
 
-For manual selection on an existing instance:
+Brev supplies one source checkout at `~/saronic-f26`. The inline Launchable
+script is [scripts/brev-bootstrap.sh](scripts/brev-bootstrap.sh): it fetches
+`SARONIC_REF`, checks out that revision with a detached HEAD, logs the commit,
+and executes that revision's `scripts/brev-setup.sh`. The setup script checks
+the host, prepares containers, and starts the harbor; it does not switch
+revisions or clone again. Local changes cause the bootstrap to refuse checkout.
+
+Use a branch or tag, or `refs/heads/<branch>` / `refs/tags/<tag>` to disambiguate
+names. Invalid or missing revisions fail startup. `SARONIC_REPO_DIR` optionally
+overrides the checkout path for manual use. Older setup scripts may select their
+own pinned revision; new feature branches should include this bootstrap refactor.
+
+For manual branch selection on an existing instance:
 
 ```bash
 SARONIC_REF=tanush/boat-harbor-simulation bash scripts/brev-bootstrap.sh
 ```
 
-Keep Docker setup, volume preparation, scene generation, and simulator startup
-in `scripts/brev-setup.sh`. That script runs the selected checkout and must not
-switch revisions. Future startup changes require a repo PR; the Launchable
-bootstrap only needs editing if this entry-point contract changes. Brev GPU,
-ports, Git source, and parameter definitions remain Launchable settings.
+To configure a fresh Launchable, keep this repository as the Git source, add
+`SARONIC_REF` with default `main`, and paste the exact bootstrap script into the
+VM setup script. Future startup changes belong in the repository's setup script;
+GPU, port, source, and parameter definitions remain Launchable settings.
 
-A temporary inline fallback handles revisions without `scripts/brev-setup.sh`: it
-runs the existing host checks, placement scene generator, and streaming Compose
-files from the selected checkout. It requires those starter files, preserves
-`BOAT_X`/`BOAT_Y`, and does not change the selected revision. A present startup
-script always takes precedence; an error in that script is not masked by the
-fallback. Remove this fallback once the refactor and test branches include the
-repo entry point.
+The bootstrap retains a temporary placement-scene fallback for older revisions
+without `scripts/brev-setup.sh`. A present setup script always takes precedence,
+and its failures are reported. The fallback can be removed once the required
+revisions all include the entry point.
 
-The revision-selection refactor must be merged into `main` and included in
-feature branches to guarantee this behavior. Older revisions may have setup
-scripts that select their own pinned revision. In particular, the original
-`brev-v2` startup selects `brev-v2` itself. Rebase new feature branches on the
-refactor before using them through this bootstrap.
+Host requirements: supported NVIDIA GPU/driver with NVENC (such as L40S),
+Docker Engine and Compose, NVIDIA Container Toolkit, and sufficient disk space
+for the Isaac Sim image and persistent caches. See NVIDIA's
+[requirements](https://docs.isaacsim.omniverse.nvidia.com/6.1.0/installation/requirements.html)
+and [container guide](https://docs.isaacsim.omniverse.nvidia.com/6.1.0/installation/install_container.html).
 
-To configure a Launchable once: keep this repository as the Git source, add
-`SARONIC_REF` as a string parameter with default `main`, and paste the exact
-contents of `scripts/brev-bootstrap.sh` into its VM setup script. This inline
-bootstrap can select a revision even when Brev's initial checkout predates the
-bootstrap file. Afterward only the deployment parameter changes for a test.
+## Scenarios and recording
 
-Run the bootstrap's local Git-fixture checks with:
+Edit `scenarios/harbor.json` before starting. It controls hull dimensions and
+mass, initial pose, thrust limits, drag, water level/current, simulation rates,
+and camera positions, targets, resolution, and focal length. Units are meters,
+kilograms, seconds, and newtons; yaw is in degrees. The world is Z-up, and the
+boat's forward direction is local +X. Camera positions and targets are in the
+boat frame. The default hull center is at its calculated calm-water equilibrium.
+If mass or dimensions change, set initial Z to
+`water.level + boat.height / 2 - boat.mass / (water.density * boat.length * boat.width)`.
+
+`BOAT_X` and `BOAT_Y` override initial placement in streaming mode (both default
+to zero). `HARBOR_SCENARIO` selects a mounted scenario path, for example
+`/workspace/scenarios/harbor.json`. Restart to apply changes.
+
+Run a finite experiment with camera recording:
 
 ```bash
+# Stop the viewer's sim first to avoid running two GPU applications at once.
+export ISAACSIM_HOST="<current Brev public IP>"
+docker compose -f compose.yaml -f compose.stream.yaml stop web-viewer sim
+./scripts/run.sh harbor --duration 20 --record --throttle 0.4 --steering 0.15
+```
+
+Each run writes `output/run_<timestamp>/` with:
+
+- `scenario.json` and `run.json`: settings and initial controls.
+- `trajectory.csv`: simulation time, boat pose, linear/angular velocity, and controls.
+- `cameras/Forward/` and `cameras/Mast/`: RGB PNGs and ideal geometric depth NPYs
+  in meters, recorded only with `--record`. Infinite depth can represent sky.
+
+`output/harbor_scene.usda` saves the initial scene for inspection. Reopening the
+USD alone displays the scene; the Python runtime supplies buoyancy and controls.
+Restart the viewer with `./scripts/start-harbor.sh` after a finite experiment.
+
+To use a custom appearance, place a **visual-only** USD model in `assets/` and
+run `./scripts/run.sh harbor --boat-usd /workspace/assets/boat.usd --record`.
+Its geometry should match the configured dimensions and its origin the hull
+center. Nested rigid bodies are rejected. The configured box collision hull,
+mass, inertia, and buoyancy approximation still define physical behavior.
+
+The original placement-only command remains available:
+
+```bash
+./scripts/run.sh deploy boat --x 10 --y 5 --heading 90
+```
+
+## Verification
+
+Without Isaac Sim, install NumPy in your Python environment and run:
+
+```bash
+PYTHONPATH=src/saronic_sim python3 -m unittest discover -s tests -v
 bash tests/test_brev_bootstrap.sh
+bash -n scripts/*.sh
+docker compose config --quiet
+ISAACSIM_HOST=127.0.0.1 docker compose -f compose.yaml -f compose.stream.yaml config --quiet
 ```
 
-For manual setup without the Launchable, clone the repository and run:
+On Brev, `./scripts/smoke-harbor.sh` runs idle and powered scenarios, verifies
+flotation and forward/turning motion, and checks both cameras produced images
+and depth. Stop the streaming containers first as shown above. Run this GPU
+check before merging or switching the Launchable to this feature.
 
-```bash
-git clone https://github.com/siddharth-diwakar/saronic-f26.git
-cd saronic-f26
-./scripts/check-host.sh
-./scripts/run.sh deploy boat --x 10 --y 5
-```
+## Model scope
 
-The first run pulls and builds the pinned Isaac Sim image, so it takes longer. Later runs reuse the Docker image and named cache volumes. The scene is saved at `output/boat_scene.usd` on the host.
+The water is a calm reflective surface. Eight displacement columns approximate
+box-hull buoyancy and restoring torque; configurable body-frame linear and
+quadratic drag and angular damping resist motion relative to current. Two
+stern thrust forces provide propulsion and steering. The dock, shore, and
+fixed buoys have collision geometry. This is a low-speed development model;
+coefficients are illustrative and require calibration to a real vessel.
 
-Isaac Sim runs as UID `1234` inside the container. `run.sh` grants that user access to `output/` using an ACL when `setfacl` is available; otherwise it makes only the generated-output directory writable by all local users. It also prepares the named cache, log, and settings volumes once so Isaac Sim can write to them. Install Ubuntu's `acl` package if you prefer ACLs.
+Waves, wakes, spray, wind, added mass, planing dynamics, noisy camera models,
+ROS 2 publishing, and autonomy are subsequent work. Camera depth currently
+represents scene geometry rather than the behavior of a physical depth sensor
+looking at reflective water.
 
-To change the placement or heading:
-
-```bash
-./scripts/run.sh deploy boat --x -3 --y 8 --heading 90 --output /workspace/output/test_scene.usd
-```
-
-Coordinates are in meters in a Z-up world. `x` and `y` locate the center of the placeholder hull; `z` defaults to `0.25`, placing the hull bottom at the water surface. Heading is yaw in degrees about +Z. The water is a flat visual marker, not a fluid simulation.
-
-To use your own USD boat model, place it in `assets/` and pass its path *inside the container*:
-
-```bash
-./scripts/run.sh deploy boat --x 10 --y 5 --boat-usd /workspace/assets/boat.usd
-```
-
-The model is referenced beneath `/World/Boat/Model`, so its authored origin and scale determine the final appearance. For portable saved scenes, keep the asset with the project and preserve its path when reopening the USD file.
+Runtime stepping follows NVIDIA's
+[SimulationManager](https://docs.isaacsim.omniverse.nvidia.com/6.1.0/py/source/extensions/isaacsim.core.simulation_manager/docs/index.html)
+and [RenderingManager](https://docs.isaacsim.omniverse.nvidia.com/6.1.0/py/source/extensions/isaacsim.core.rendering_manager/docs/index.html)
+APIs. Camera output uses USD cameras and Replicator render products/annotators;
+see [camera sensors](https://docs.isaacsim.omniverse.nvidia.com/6.1.0/sensors/isaacsim_sensors_camera.html).
 
 ## Repo layout
 
-- `Dockerfile`, `compose.yaml`: pinned container runtime, GPU request, mounts, and persistent caches.
-- `compose.stream.yaml`, `streaming/web-viewer/`: long-running Isaac Sim WebRTC server and browser viewer, based on NVIDIA's official viewer setup.
-- `scripts/brev-bootstrap.sh`: minimal Launchable revision selector.
-- `scripts/brev-setup.sh`: startup logic executed from the selected checkout.
-- `scripts/check-host.sh`: quick Brev host checks.
-- `scripts/run.sh`, `scripts/prepare-volumes.sh`: prepare writable volumes, then build and run one scenario.
-- `src/saronic_sim/cli.py`: scene generation entry point.
-- `assets/`: USD models you add later.
-- `output/`: generated scenes, ignored by Git.
+- `src/saronic_sim/`: CLI, scenario validation, scene authoring, force model, runtime, cameras.
+- `scenarios/`: versioned experiment settings.
+- `scripts/`: branch-selection bootstrap, repository startup, host checks, volume permissions, and GPU smoke check.
+- `compose*.yaml`, `Dockerfile`, `streaming/`: Docker and existing WebRTC viewer.
+- `assets/`: optional models; `output/`: generated data, ignored by Git.
 
-The image is based on [NVIDIA's official Isaac Sim container](https://docs.isaacsim.omniverse.nvidia.com/6.1.0/installation/install_container.html); the standalone script follows NVIDIA's [SimulationApp guidance](https://docs.isaacsim.omniverse.nvidia.com/6.1.0/python_scripting/manual_standalone_python.html).
+Isaac Sim runs as UID 1234. Preparation grants output access using ACLs when
+available, otherwise makes the generated output directory writable locally;
+named cache and settings volumes are prepared once for that user.

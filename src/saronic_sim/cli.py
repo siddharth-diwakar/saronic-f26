@@ -27,7 +27,33 @@ def parse_args() -> argparse.Namespace:
         "--output", type=Path, default=Path("/workspace/output/boat_scene.usd"),
         help="USD scene output path",
     )
-    return parser.parse_args()
+    harbor = subcommands.add_parser("harbor", help="Run the floating boat harbor scenario")
+    from config import DEFAULT_SCENARIO
+    harbor.add_argument("--scenario", type=Path, default=DEFAULT_SCENARIO)
+    harbor.add_argument("--output", type=Path, default=Path("/workspace/output"))
+    harbor.add_argument("--x", type=finite_float, help="Override initial world X")
+    harbor.add_argument("--y", type=finite_float, help="Override initial world Y")
+    harbor.add_argument("--heading", type=finite_float, help="Override initial yaw in degrees")
+    harbor.add_argument("--stream", action="store_true", help="Enable the browser viewer and boat controls")
+    harbor.add_argument("--record", action="store_true", help="Record RGB and depth frames")
+    harbor.add_argument("--duration", type=finite_float, help="Simulation seconds; defaults to scenario duration without streaming")
+    harbor.add_argument("--throttle", type=finite_float, default=0)
+    harbor.add_argument("--steering", type=finite_float, default=0)
+    harbor.add_argument("--boat-usd", type=Path, help="Optional visual-only USD boat model")
+    args, kit_args = parser.parse_known_args()
+    if any(not item.startswith("--/") for item in kit_args):
+        parser.error("Unknown arguments: " + " ".join(kit_args))
+    if args.command == "harbor":
+        if not -1 <= args.throttle <= 1 or not -1 <= args.steering <= 1:
+            parser.error("throttle and steering must be between -1 and 1")
+        if args.duration is not None and args.duration <= 0:
+            parser.error("duration must be positive")
+        if args.boat_usd and not args.boat_usd.is_file():
+            parser.error("boat USD file does not exist")
+    # Only Kit settings should reach SimulationApp, not our scenario arguments.
+    import sys
+    sys.argv = [sys.argv[0], *kit_args]
+    return args
 
 
 def add_box(stage, path, scale, color, offset=(0.0, 0.0, 0.0)):
@@ -86,4 +112,18 @@ def create_scene(args: argparse.Namespace) -> None:
 
 
 if __name__ == "__main__":
-    create_scene(parse_args())
+    args = parse_args()
+    if args.command == "deploy":
+        create_scene(args)
+    else:
+        from config import load_config
+        from runtime import run
+        config = load_config(args.scenario)
+        if args.x is not None:
+            config["boat"]["position"][0] = args.x
+        if args.y is not None:
+            config["boat"]["position"][1] = args.y
+        if args.heading is not None:
+            config["boat"]["heading"] = args.heading
+        duration = args.duration if args.duration is not None else (None if args.stream else config["simulation"]["duration"])
+        run(config, args.output, args.stream, duration, args.throttle, args.steering, args.record, args.boat_usd)

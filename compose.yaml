@@ -16,6 +16,7 @@ services:
               capabilities: [gpu]
     volumes:
       - ./src:/workspace/src:ro
+      - ./scenarios:/workspace/scenarios:ro
       - ./assets:/workspace/assets:ro
       - ./output:/workspace/output
       - isaac_cache:/isaac-sim/.cache
