@@ -1,5 +1,8 @@
 # Saronic Isaac Sim harbor
 
+The CPU API skeleton and Coolify/PostgreSQL setup are in [backend/](backend/README.md).
+Deploy that directory independently of the GPU simulation environment below.
+
 A Docker environment for NVIDIA Brev with a procedural harbor, floating boat,
 differential thrust, two onboard cameras, and a browser viewer. Pinned to Isaac
 Sim **6.1.0**. The default scene needs no external model downloads.

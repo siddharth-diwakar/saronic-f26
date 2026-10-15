@@ -3,3 +3,9 @@ output/
 __pycache__/
 *.py[cod]
 .env
+.env.*
+!.env.example
+.venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
