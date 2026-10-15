@@ -2,7 +2,7 @@
 
 from typing import Literal
 
-from pydantic import SecretStr, field_validator
+from pydantic import AliasChoices, Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import ArgumentError
@@ -15,6 +15,10 @@ class Settings(BaseSettings):
     app_env: Literal["development", "test", "production"] = "production"
     log_level: Literal["debug", "info", "warning", "error", "critical"] = "info"
     slack_webhook_url: SecretStr | None = None
+    # Tags every log line with the deployed revision. Coolify provides SOURCE_COMMIT.
+    git_commit: str | None = Field(
+        default=None, validation_alias=AliasChoices("GIT_COMMIT", "SOURCE_COMMIT")
+    )
 
     @field_validator("database_url")
     @classmethod

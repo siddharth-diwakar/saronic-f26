@@ -183,6 +183,11 @@ that stay in progress; nothing schedules it yet.
   under `src/saronic_api/` the same way. Use synchronous handlers with the
   provided synchronous DB dependency, or explicitly offload DB work from async
   handlers.
+- Logs are one JSON object per line on stdout, tagged with `env` and `commit`
+  (`GIT_COMMIT`, or Coolify's `SOURCE_COMMIT`). Use `logging.getLogger(__name__)`;
+  pass structured fields with `extra={...}`. Wrap session and provisioning work in
+  `log_context(session_id=..., brev_instance_id=...)` from `saronic_api.log` so
+  every line inside is tagged. Never log secrets or `DATABASE_URL`.
 - Use `Depends(get_db)` for request-scoped sessions. Commit transactions
   explicitly; uncommitted changes roll back when the session closes.
 - Define models against `database.Base` and import their modules in
