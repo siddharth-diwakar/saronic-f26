@@ -11,6 +11,8 @@ services:
       - "${BOAT_Y:-0}"
       - "--scenario"
       - "${HARBOR_SCENARIO:-/workspace/scenarios/harbor.json}"
+      - "--control-port"
+      - "${HARBOR_CONTROL_PORT:-8212}"
       - "--/exts/omni.kit.livestream.app/primaryStream/publicIp=${ISAACSIM_HOST:?Set ISAACSIM_HOST to the Brev public IP}"
       - "--/exts/omni.kit.livestream.app/primaryStream/signalPort=49100"
       - "--/exts/omni.kit.livestream.app/primaryStream/streamPort=47998"

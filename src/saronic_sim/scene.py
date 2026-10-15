@@ -1,6 +1,20 @@
 """Procedural harbor assets and boat-mounted cameras."""
 from pathlib import Path
 
+# Initial lighting and overview camera; runtime commands report changes relative to these.
+SKY_INTENSITY = 700.0
+SUN_INTENSITY = 2500.0
+SUN_ROTATION = [-35.0, -25.0, 0.0]
+OVERVIEW_POSITION = [-10.0, -13.0, 10.0]
+OVERVIEW_TARGET = [5.0, 3.0, 0.0]
+OVERVIEW_FOCAL_LENGTH = 50.0  # USD camera default
+
+
+def camera_transform(position, target):
+    """Camera-to-parent transform aiming from position at target with +Z up."""
+    from pxr import Gf
+    return Gf.Matrix4d().SetLookAt(Gf.Vec3d(*position), Gf.Vec3d(*target), Gf.Vec3d(0, 0, 1)).GetInverse()
+
 
 def build_scene(config, boat_usd=None):
     import omni.usd
@@ -17,12 +31,12 @@ def build_scene(config, boat_usd=None):
     physics_api.CreateTimeStepsPerSecondAttr(config["simulation"]["physics_hz"])
     physics_api.CreateEnableGPUDynamicsAttr(False)
     dome = UsdLux.DomeLight.Define(stage, "/World/Sky")
-    dome.CreateIntensityAttr(700)
+    dome.CreateIntensityAttr(SKY_INTENSITY)
     dome.CreateColorAttr(Gf.Vec3f(.7, .82, 1))
     sun = UsdLux.DistantLight.Define(stage, "/World/Sun")
-    sun.CreateIntensityAttr(2500)
+    sun.CreateIntensityAttr(SUN_INTENSITY)
     sun.CreateAngleAttr(1)
-    UsdGeom.Xformable(sun).AddRotateXYZOp().Set(Gf.Vec3f(-35, -25, 0))
+    UsdGeom.Xformable(sun).AddRotateXYZOp().Set(Gf.Vec3f(*SUN_ROTATION))
 
     def material(name, color, roughness=.5, metallic=0):
         mat = UsdShade.Material.Define(stage, "/World/Materials/"+name)
@@ -106,14 +120,13 @@ def build_scene(config, boat_usd=None):
     for c in config["cameras"]:
         path = "/World/Boat/Cameras/"+c["name"]
         camera = UsdGeom.Camera.Define(stage, path)
-        eye, target = Gf.Vec3d(*c["position"]), Gf.Vec3d(*c["target"])
-        transform = Gf.Matrix4d().SetLookAt(eye, target, Gf.Vec3d(0, 0, 1)).GetInverse()
-        camera.AddTransformOp().Set(transform)
+        camera.AddTransformOp().Set(camera_transform(c["position"], c["target"]))
         camera.CreateFocalLengthAttr(c["focal_length"])
         camera.CreateHorizontalApertureAttr(20.955)
         camera.CreateVerticalApertureAttr(20.955*c["resolution"][1]/c["resolution"][0])
         camera.CreateClippingRangeAttr(Gf.Vec2f(.05, 250))
         camera_paths.append(path)
     overview = UsdGeom.Camera.Define(stage, "/World/Overview")
-    overview.AddTransformOp().Set(Gf.Matrix4d().SetLookAt(Gf.Vec3d(-10, -13, 10), Gf.Vec3d(5, 3, 0), Gf.Vec3d(0, 0, 1)).GetInverse())
+    overview.AddTransformOp().Set(camera_transform(OVERVIEW_POSITION, OVERVIEW_TARGET))
+    overview.CreateFocalLengthAttr(OVERVIEW_FOCAL_LENGTH)
     return stage, camera_paths
