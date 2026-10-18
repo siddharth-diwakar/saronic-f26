@@ -38,6 +38,8 @@ def snapshot(record: SessionRecord) -> SessionSnapshot:
     return SessionSnapshot(
         status=SessionStatus(record.status),
         has_error=record.error_code is not None,
+        # instance_id is only ever set from a `brev ls` listing.
+        instance_seen=record.instance_id is not None,
         provisioning_started_at=record.provisioning_started_at,
         delete_requested_at=record.delete_requested_at,
     )

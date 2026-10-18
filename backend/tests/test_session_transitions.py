@@ -18,8 +18,8 @@ NOW = datetime(2026, 10, 15, 12, 0, tzinfo=UTC)
 LONG_AGO = NOW - timedelta(hours=1)
 
 
-def session(status, *, has_error=False, started=LONG_AGO, delete_requested=None):
-    return SessionSnapshot(status, has_error, started, delete_requested)
+def session(status, *, has_error=False, seen=True, started=LONG_AGO, delete_requested=None):
+    return SessionSnapshot(status, has_error, seen, started, delete_requested)
 
 
 def instance(status="RUNNING", build="COMPLETED", health="HEALTHY"):
@@ -86,11 +86,11 @@ def test_missing_instance_within_grace_waits(current):
 
 
 @pytest.mark.parametrize("current", [S.PROVISIONING, S.RUNNING])
-def test_missing_instance_after_grace_fails(current):
+def test_missing_instance_after_grace_fails_and_deletes_in_case_ls_omitted_it(current):
     action = decide(session(current, started=NOW - MISSING_GRACE), None, NOW)
     assert action.status == S.FAILED
     assert action.error_code == "brev_instance_missing"
-    assert not action.delete
+    assert action.delete
 
 
 # --- stopping ---
@@ -114,13 +114,21 @@ def test_stopping_never_deletes_while_brev_is_deleting():
 
 def test_stopping_blind_delete_when_not_yet_listed():
     # e.g. create timed out but Brev created it anyway; deleting a missing one is a no-op.
-    action = decide(session(S.STOPPING, started=NOW), None, NOW)
+    action = decide(session(S.STOPPING, seen=False, started=NOW), None, NOW)
     assert action == Action(delete=True)
 
 
-def test_stopping_waits_out_grace_after_blind_delete():
-    snap = session(S.STOPPING, started=NOW - timedelta(seconds=30), delete_requested=NOW)
+def test_stopping_never_seen_waits_out_grace_after_blind_delete():
+    started = NOW - MISSING_GRACE + timedelta(seconds=1)
+    snap = session(S.STOPPING, seen=False, started=started, delete_requested=NOW)
     assert decide(snap, None, NOW) == NO_CHANGE
+    later = NOW + timedelta(seconds=1)
+    assert decide(snap, None, later) == Action(status=S.STOPPED)
+
+
+def test_stopping_seen_and_gone_ends_without_waiting_for_grace():
+    snap = session(S.STOPPING, started=NOW - timedelta(seconds=30), delete_requested=NOW)
+    assert decide(snap, None, NOW) == Action(status=S.STOPPED)
 
 
 def test_stopping_gone_ends_stopped():

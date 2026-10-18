@@ -1,26 +1,17 @@
-"""Session API tests.
-
-Tests marked requires_db need PostgreSQL (SKIP LOCKED / FOR UPDATE / advisory locks), so
-SQLite is not an option. Point TEST_DATABASE_URL at a throwaway database; it is migrated
-to head and sim_sessions is truncated between tests. See backend/README.md.
-"""
+"""Session API tests. Tests using `db_engine`/`api` need TEST_DATABASE_URL (see conftest.py)."""
 
 import os
 import subprocess
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
-from alembic import command
-from alembic.config import Config
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, text, update
+from sqlalchemy import update
 from sqlalchemy.orm import Session
 
 from saronic_api.config import Settings
-from saronic_api.database import database_url
 from saronic_api.main import create_app
 from saronic_api.refs import (
     AmbiguousRef,
@@ -33,9 +24,6 @@ from saronic_api.sessions.models import SimSession
 from saronic_api.sessions.router import get_ref_resolver
 
 TEST_DATABASE_URL = os.environ.get("TEST_DATABASE_URL")
-requires_db = pytest.mark.skipif(
-    not TEST_DATABASE_URL, reason="set TEST_DATABASE_URL to a throwaway PostgreSQL database"
-)
 
 API_KEY = "session-api-test-key"
 BREV_KEY = "brev-key-must-never-leak"
@@ -139,29 +127,6 @@ def test_unknown_body_fields_rejected(monkeypatch):
 # --- PostgreSQL ---
 
 
-@pytest.fixture(scope="module")
-def migrated_db():
-    previous = os.environ.get("DATABASE_URL")
-    os.environ["DATABASE_URL"] = TEST_DATABASE_URL
-    try:
-        command.upgrade(Config(str(Path(__file__).parents[1] / "alembic.ini")), "head")
-    finally:
-        if previous is None:
-            del os.environ["DATABASE_URL"]
-        else:
-            os.environ["DATABASE_URL"] = previous
-    engine = create_engine(database_url(make_settings()))
-    yield engine
-    engine.dispose()
-
-
-@pytest.fixture
-def db_engine(migrated_db):
-    with migrated_db.begin() as connection:
-        connection.execute(text("TRUNCATE sim_sessions"))
-    return migrated_db
-
-
 @pytest.fixture
 def api(db_engine, no_subprocesses):
     with client_for(make_settings()) as client:
@@ -180,7 +145,6 @@ def create(api, **body):
     return response.json()
 
 
-@requires_db
 def test_create_returns_202_with_resolved_commit_and_derived_instance(api):
     body = create(api)
     sid = uuid.UUID(body["id"])
@@ -200,7 +164,6 @@ def test_create_returns_202_with_resolved_commit_and_derived_instance(api):
     assert body["running_at"] is None and body["ended_at"] is None
 
 
-@requires_db
 def test_create_with_explicit_ref_and_get(api):
     body = create(api, ref="team/feature")
     got = api.get(f"/api/v1/sessions/{body['id']}", headers=AUTH)
@@ -210,7 +173,6 @@ def test_create_with_explicit_ref_and_get(api):
     assert BREV_KEY not in got.text and API_KEY not in got.text
 
 
-@requires_db
 @pytest.mark.parametrize("ref", ["bad ref", "offline"])
 def test_ref_errors_insert_nothing(api, db_engine, ref):
     assert api.post("/api/v1/sessions", json={"ref": ref}, headers=AUTH).status_code in (422, 502)
@@ -218,7 +180,6 @@ def test_ref_errors_insert_nothing(api, db_engine, ref):
         assert db.query(SimSession).count() == 0
 
 
-@requires_db
 def test_cap_returns_409_until_a_session_ends(api, db_engine):
     first = create(api)
     response = api.post("/api/v1/sessions", headers=AUTH)
@@ -230,7 +191,6 @@ def test_cap_returns_409_until_a_session_ends(api, db_engine):
     create(api)
 
 
-@requires_db
 def test_concurrent_creates_respect_cap(db_engine, no_subprocesses):
     with (
         client_for(make_settings(max_active_sessions=2)) as api,
@@ -242,14 +202,12 @@ def test_concurrent_creates_respect_cap(db_engine, no_subprocesses):
     assert sorted(codes) == [202, 202, 409, 409, 409, 409]
 
 
-@requires_db
 def test_get_unknown_is_404_and_bad_id_is_422(api):
     assert api.get(f"/api/v1/sessions/{uuid.uuid4()}", headers=AUTH).status_code == 404
     assert api.get("/api/v1/sessions/not-a-uuid", headers=AUTH).status_code == 422
     assert api.post(f"/api/v1/sessions/{uuid.uuid4()}/stop", headers=AUTH).status_code == 404
 
 
-@requires_db
 def test_stop_requested_cancels_and_is_idempotent(api):
     sid = create(api)["id"]
     first = api.post(f"/api/v1/sessions/{sid}/stop", headers=AUTH)
@@ -263,7 +221,6 @@ def test_stop_requested_cancels_and_is_idempotent(api):
     assert again.json()["ended_at"] == first.json()["ended_at"]
 
 
-@requires_db
 @pytest.mark.parametrize("status", ["provisioning", "running"])
 def test_stop_active_goes_to_stopping_and_is_idempotent(api, db_engine, status):
     sid = create(api)["id"]
@@ -276,7 +233,6 @@ def test_stop_active_goes_to_stopping_and_is_idempotent(api, db_engine, status):
     assert again["stop_requested_at"] == first["stop_requested_at"]
 
 
-@requires_db
 @pytest.mark.parametrize("status", ["stopped", "failed"])
 def test_stop_terminal_changes_nothing(api, db_engine, status):
     sid = create(api)["id"]

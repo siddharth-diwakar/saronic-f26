@@ -24,6 +24,7 @@ BREV_RUNNING = "RUNNING"
 class SessionSnapshot:
     status: SessionStatus
     has_error: bool
+    instance_seen: bool  # listed by `brev ls` at least once
     provisioning_started_at: datetime | None
     delete_requested_at: datetime | None
 
@@ -45,10 +46,12 @@ def decide(session: SessionSnapshot, instance: BrevInstance | None, now: datetim
         if instance is None:
             if _within_grace(session, now):
                 return NO_CHANGE
+            # Delete anyway: if `ls` merely omitted a live instance, this stops the GPU.
             return Action(
                 status=SessionStatus.FAILED,
                 error_code="brev_instance_missing",
                 error_message="The Brev instance is no longer listed by Brev.",
+                delete=True,
             )
         if _instance_failed(instance):
             return Action(
@@ -71,7 +74,8 @@ def decide(session: SessionSnapshot, instance: BrevInstance | None, now: datetim
                 # Not listed yet does not mean never created (e.g. a create that timed out).
                 # Deleting a missing instance is a no-op success.
                 return Action(delete=True)
-            if _within_grace(session, now):
+            # Seen before and now gone: deleted. Never seen: wait in case `ls` is lagging.
+            if not session.instance_seen and _within_grace(session, now):
                 return NO_CHANGE
             return Action(
                 status=SessionStatus.FAILED if session.has_error else SessionStatus.STOPPED
