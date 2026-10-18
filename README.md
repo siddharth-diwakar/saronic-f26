@@ -154,12 +154,51 @@ the next physics step. Movement fails while the timeline is stopped. Applied
 commands are appended with simulation time to the run's `commands.jsonl`.
 Camera resolution is fixed at startup because render products depend on it.
 
-## Verification
+## Gym-style stepping
 
-Without Isaac Sim, install NumPy in your Python environment and run:
+For closed-loop experiments, start the harbor in **lockstep**: simulation time
+advances only when a `step` command arrives, and each step returns what every
+camera sees.
 
 ```bash
-PYTHONPATH=src/saronic_sim python3 -m unittest discover -s tests -v
+./scripts/run.sh harbor --lockstep --control-port 8212   # finite runs: stop the viewer first
+```
+
+`src/saronic_env` is a standard-library Python client (NumPy and Pillow only to
+decode images):
+
+```python
+from saronic_env import HarborEnv
+
+env = HarborEnv("http://127.0.0.1:8212")
+observation = env.reset()                     # initial pose, rendered
+observation = env.step(
+    pose={"position": [3, 0, 0.3], "orientation_xyzw": [0, 0, 0, 1]},
+    seconds=0.02,                             # rounded to whole physics steps
+    physics=False,                            # hold the pose: an external model owns motion
+)
+observation.rgb("Forward")                    # HxWx3 uint8; observation.png() for raw bytes
+observation.state["boat"]["position"]
+```
+
+`physics=True` (default) instead simulates the harbor's own buoyancy, drag, and
+thrust for `seconds` after placing the boat. `depth=True` adds per-camera
+distance-to-image-plane arrays. `seconds=0` (`env.render()`) renders without
+advancing time. Over HTTP, a step is `POST /commands?wait=60` with
+`{"type": "step", ...}`; the response carries `result.state` and
+`result.frames.<camera>.rgb_png_base64`. Other commands stay queued until the
+current step has rendered.
+
+`examples/closed_loop.py` is the P0 loop: a stand-in for Saronic's boat model
+receives each step's images and pose, returns the next pose 20 ms later, and
+the harbor renders it. Frames and `poses.csv` are written to `--output`.
+
+## Verification
+
+Without Isaac Sim, install NumPy and Pillow in your Python environment and run:
+
+```bash
+PYTHONPATH=src/saronic_sim:src python3 -m unittest discover -s tests -v
 bash tests/test_brev_bootstrap.sh
 bash -n scripts/*.sh
 docker compose config --quiet

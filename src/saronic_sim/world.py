@@ -8,8 +8,9 @@ from commands import OVERVIEW, CommandError, check_look_at, pose_transform
 
 
 class World:
-    def __init__(self, stage, config, camera_paths, controls, sliders=None):
+    def __init__(self, stage, config, camera_paths, controls, sliders=None, initial_transform=None):
         self.stage, self.config, self.controls = stage, config, controls
+        self.initial_transform = initial_transform
         self.sliders = sliders or {}
         self.camera_paths = {c["name"]: path for c, path in zip(config["cameras"], camera_paths)}
         self.camera_paths[OVERVIEW] = "/World/Overview"
@@ -40,12 +41,10 @@ class World:
             if body is None:
                 raise CommandError("Press Play before moving the boat")
             if kind == "reset":
-                self.controls["reset"] = True
-            else:
-                current = body.get_transforms()[0]
-                transform = pose_transform(current, command.get("position"), command.get("heading"))
-                body.set_transforms(np.array([transform], dtype=np.float32), indices)
+                body.set_transforms(np.array(self.initial_transform, dtype=np.float32), indices)
                 body.set_velocities(np.zeros((1, 6), dtype=np.float32), indices)
+            else:
+                self.place(body, command, indices)
         elif kind == "set_camera":
             name = command["name"]
             changes = {key: command[key] for key in ("position", "target", "focal_length") if key in command}
@@ -61,6 +60,13 @@ class World:
             self.environment = environment
         else:
             raise CommandError(f"Unsupported command {kind}")
+
+    def place(self, body, pose, indices):
+        """Teleport the boat to a (partial) pose and stop it."""
+        current = body.get_transforms()[0]
+        transform = pose_transform(current, pose.get("position"), pose.get("heading"), pose.get("orientation_xyzw"))
+        body.set_transforms(np.array([transform], dtype=np.float32), indices)
+        body.set_velocities(np.zeros((1, 6), dtype=np.float32), indices)
 
     def snapshot(self, elapsed, playing, boat=None):
         """JSON-ready state; boat is (transform, velocity) or None while stopped."""

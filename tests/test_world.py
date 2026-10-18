@@ -35,7 +35,8 @@ class WorldCommands(unittest.TestCase):
         self.config = load_config()
         self.controls = {"throttle": 0.0, "steering": 0.0, "reset": False}
         self.slider = SimpleNamespace(model=Mock())
-        self.world = World(Mock(), self.config, ["/World/Boat/Cameras/Forward", "/World/Boat/Cameras/Mast"], self.controls, {"throttle": self.slider})
+        self.initial = np.array([[0, 0, 0.3, 0, 0, 0, 1]], dtype=np.float32)
+        self.world = World(Mock(), self.config, ["/World/Boat/Cameras/Forward", "/World/Boat/Cameras/Mast"], self.controls, {"throttle": self.slider}, self.initial)
         self.world._update_camera = Mock()
         self.world._update_lights = Mock()
         self.body = FakeBody()
@@ -56,7 +57,8 @@ class WorldCommands(unittest.TestCase):
             with self.subTest(command=command), self.assertRaises(CommandError):
                 self.world.apply(command, None, self.indices)
         self.world.apply({"type": "reset"}, self.body, self.indices)
-        self.assertTrue(self.controls["reset"])
+        np.testing.assert_array_equal(self.body.transforms, self.initial)
+        np.testing.assert_array_equal(self.body.velocities, 0)
 
     def test_camera_update_merges_and_only_reaims_when_moved(self):
         self.world.apply({"type": "set_camera", "name": "Forward", "focal_length": 30}, self.body, self.indices)
