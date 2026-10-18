@@ -77,6 +77,21 @@ for the Isaac Sim image and persistent caches. See NVIDIA's
 [requirements](https://docs.isaacsim.omniverse.nvidia.com/6.1.0/installation/requirements.html)
 and [container guide](https://docs.isaacsim.omniverse.nvidia.com/6.1.0/installation/install_container.html).
 
+### Report startup to the backend
+
+When the backend launches an instance it sets `SARONIC_BACKEND_URL`,
+`SARONIC_SESSION_ID`, and `SARONIC_INGEST_TOKEN` as Launchable parameters.
+`scripts/brev-setup.sh` then reports `instance_up` and `container_built`. A
+background watcher (`output/report-readiness.log`) reports `scene_loaded`,
+`physics_running`, and `cameras_ready` as the sim prints its `Harbor*:` startup
+markers, uploads the sim log as `isaac_launch`, and reports `ready` once the
+container is healthy. `cameras_ready` means every scenario camera produced a
+frame; startup fails if one renders nothing. On failure or timeout
+(`SARONIC_READY_TIMEOUT`, default 900 s) it reports the stage that did not
+complete, an error code, and the log tail, so diagnosis does not need SSH.
+Without these variables startup behaves as before, and an unreachable backend
+never blocks it.
+
 ## Scenarios and recording
 
 Edit `scenarios/harbor.json` before starting. It controls hull dimensions and
@@ -131,6 +146,7 @@ Without Isaac Sim, install NumPy in your Python environment and run:
 ```bash
 PYTHONPATH=src/saronic_sim python3 -m unittest discover -s tests -v
 bash tests/test_brev_bootstrap.sh
+bash tests/test_startup_reporting.sh
 bash -n scripts/*.sh
 docker compose config --quiet
 ISAACSIM_HOST=127.0.0.1 docker compose -f compose.yaml -f compose.stream.yaml config --quiet

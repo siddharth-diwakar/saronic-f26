@@ -30,6 +30,8 @@ def run(config, output, stream=False, duration=None, throttle=0, steering=0, rec
         from isaacsim.core.experimental.utils import stage as stage_utils
         np.random.seed(config["simulation"]["seed"])
         stage, paths = build_scene(config, boat_usd)
+        # Startup markers (Harbor*: ...) are parsed by scripts/report-readiness.sh; keep them stable.
+        print(f"HarborSceneLoaded: harbor stage built with {len(paths)} boat cameras", flush=True)
         if not stage.GetRootLayer().Export(str(output / "harbor_scene.usda")):
             raise RuntimeError("Could not save the initial harbor scene")
         run_output = output / ("run_" + time.strftime("%Y%m%d_%H%M%S") + f"_{time.time_ns() % 1000000:06d}")
@@ -73,8 +75,14 @@ def run(config, output, stream=False, duration=None, throttle=0, steering=0, rec
         if record:
             recorder = CameraRecorder(config, paths, run_output)
         # Warm up assets, render products, and streaming before marking readiness.
+        probe = recorder or CameraRecorder(config, paths, run_output)
         for _ in range(20):
             RenderingManager.render()
+        # Fails startup if any camera renders nothing.
+        frames = probe.read()
+        if probe is not recorder:
+            probe.close()
+        print(f"HarborCamerasReady: {', '.join(frames)} rendered", flush=True)
         dt = 1/config["simulation"]["physics_hz"]
         render_every = int(config["simulation"]["physics_hz"]/config["simulation"]["render_hz"])
         elapsed, step, frame, next_record = 0.0, 0, 0, 0.0
