@@ -13,17 +13,22 @@ import threading
 from collections import OrderedDict
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, urlsplit
 
 MAX_BODY_BYTES = 64 * 1024
 RESULT_HISTORY = 256
+MAX_WAIT_SECONDS = 300
 OVERVIEW = "Overview"
 COMMAND_FIELDS = {
     "set_controls": {"throttle", "steering"},
-    "set_pose": {"position", "heading"},
+    "set_pose": {"position", "heading", "orientation_xyzw"},
     "reset": set(),
     "set_camera": {"name", "position", "target", "focal_length"},
     "set_environment": {"current", "sun_intensity", "sky_intensity", "sun_rotation"},
+    # Lockstep only: optionally place the boat, advance time, render every camera.
+    "step": {"seconds", "pose", "physics", "images", "depth"},
 }
+POSE_FIELDS = {"position", "heading", "orientation_xyzw"}
 
 
 class CommandError(ValueError):
@@ -61,10 +66,7 @@ def parse_command(payload, camera_names):
         for key, value in fields.items():
             command[key] = _number(value, key, -1, 1)
     elif kind == "set_pose":
-        if "position" in fields:
-            command["position"] = _vector(fields["position"], "position")
-        if "heading" in fields:
-            command["heading"] = _number(fields["heading"], "heading")
+        command.update(_pose(fields))
     elif kind == "set_camera":
         if fields.get("name") not in {*camera_names, OVERVIEW}:
             raise CommandError("name must be one of: " + ", ".join([*camera_names, OVERVIEW]))
@@ -82,9 +84,39 @@ def parse_command(payload, camera_names):
         for key in ("sun_intensity", "sky_intensity"):
             if key in fields:
                 command[key] = _number(fields[key], key, 0, 100000)
+    elif kind == "step":
+        command["seconds"] = _number(fields.get("seconds", 0.02), "seconds", 0, 60)
+        if "pose" in fields:
+            if not isinstance(fields["pose"], dict) or set(fields["pose"]) - POSE_FIELDS:
+                raise CommandError("pose may contain only: " + ", ".join(sorted(POSE_FIELDS)))
+            command["pose"] = _pose(fields["pose"])
+            if not command["pose"]:
+                raise CommandError("pose must set position, heading, or orientation_xyzw")
+        for key, default in (("physics", True), ("images", True), ("depth", False)):
+            if not isinstance(fields.get(key, default), bool):
+                raise CommandError(f"{key} must be true or false")
+            command[key] = fields.get(key, default)
+        return command
     if kind != "reset" and len(command) == 1 + (kind == "set_camera"):
         raise CommandError(f"{kind} requires at least one of: {', '.join(sorted(COMMAND_FIELDS[kind] - {'name'}))}")
     return command
+
+
+def _pose(fields):
+    pose = {}
+    if "position" in fields:
+        pose["position"] = _vector(fields["position"], "position")
+    if "heading" in fields and "orientation_xyzw" in fields:
+        raise CommandError("Give heading or orientation_xyzw, not both")
+    if "heading" in fields:
+        pose["heading"] = _number(fields["heading"], "heading")
+    if "orientation_xyzw" in fields:
+        quaternion = _vector(fields["orientation_xyzw"], "orientation_xyzw", 4)
+        norm = math.sqrt(sum(value * value for value in quaternion))
+        if norm < 1e-6:
+            raise CommandError("orientation_xyzw must be a nonzero quaternion")
+        pose["orientation_xyzw"] = [value / norm for value in quaternion]
+    return pose
 
 
 def check_look_at(position, target):
@@ -94,12 +126,14 @@ def check_look_at(position, target):
         raise CommandError("Camera target must not be directly above or below its position")
 
 
-def pose_transform(current, position=None, heading=None):
-    """Return [x, y, z, qx, qy, qz, qw]; a new heading also levels roll and pitch."""
+def pose_transform(current, position=None, heading=None, orientation_xyzw=None):
+    """Return [x, y, z, qx, qy, qz, qw]; a heading alone also levels roll and pitch."""
     transform = [float(value) for value in current]
     if position is not None:
         transform[:3] = position
-    if heading is not None:
+    if orientation_xyzw is not None:
+        transform[3:] = orientation_xyzw
+    elif heading is not None:
         half = math.radians(heading) / 2
         transform[3:] = [0.0, 0.0, math.sin(half), math.cos(half)]
     return transform
@@ -111,7 +145,7 @@ class CommandQueue:
     def __init__(self):
         self._pending = queue.SimpleQueue()
         self._results = OrderedDict()
-        self._lock = threading.Lock()
+        self._lock = threading.Condition()
         self._ids = itertools.count(1)
         self._state = None
 
@@ -132,13 +166,24 @@ class CommandQueue:
             except queue.Empty:
                 return
 
-    def complete(self, command_id, error=None):
+    def complete(self, command_id, error=None, result=None):
         with self._lock:
             if command_id in self._results:
-                result = {"id": command_id, "status": "failed" if error else "applied"}
+                entry = {"id": command_id, "status": "failed" if error else "applied"}
                 if error:
-                    result["error"] = error
-                self._results[command_id] = result
+                    entry["error"] = error
+                elif result is not None:
+                    entry["result"] = result
+                self._results[command_id] = entry
+            self._lock.notify_all()
+
+    def wait(self, command_id, timeout):
+        """Block until the command is applied or failed, or the timeout passes."""
+        with self._lock:
+            self._lock.wait_for(
+                lambda: self._results.get(command_id, {}).get("status") != "queued", timeout
+            )
+            return copy.deepcopy(self._results.get(command_id))
 
     def result(self, command_id):
         with self._lock:
@@ -175,8 +220,15 @@ def make_handler(commands, camera_names):
             self._reply(HTTPStatus.NOT_FOUND, {"error": "Not found"})
 
         def do_POST(self):
-            if self.path != "/commands":
+            url = urlsplit(self.path)
+            if url.path != "/commands":
                 return self._reply(HTTPStatus.NOT_FOUND, {"error": "Not found"})
+            try:
+                wait = float(parse_qs(url.query).get("wait", ["0"])[0])
+                if not 0 <= wait <= MAX_WAIT_SECONDS:
+                    raise ValueError
+            except ValueError:
+                return self._reply(HTTPStatus.BAD_REQUEST, {"error": f"wait must be 0 to {MAX_WAIT_SECONDS} seconds"})
             try:
                 length = int(self.headers.get("Content-Length", 0))
             except ValueError:
@@ -188,6 +240,11 @@ def make_handler(commands, camera_names):
             except (CommandError, json.JSONDecodeError, UnicodeDecodeError) as error:
                 return self._reply(HTTPStatus.BAD_REQUEST, {"error": str(error)})
             command_id = commands.submit(command)
+            if wait:
+                # ?wait=N blocks until the simulation has applied the command.
+                result = commands.wait(command_id, wait)
+                if result and result["status"] != "queued":
+                    return self._reply(HTTPStatus.OK, result)
             self._reply(HTTPStatus.ACCEPTED, {"id": command_id, "status": "queued"})
 
         def log_message(self, format, *args):

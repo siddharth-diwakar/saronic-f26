@@ -6,7 +6,7 @@ import traceback
 from pathlib import Path
 
 
-def run(config, output, stream=False, duration=None, throttle=0, steering=0, record=False, boat_usd=None, control_port=None):
+def run(config, output, stream=False, duration=None, throttle=0, steering=0, record=False, boat_usd=None, control_port=None, lockstep=False):
     import numpy as np
     from isaacsim import SimulationApp
     output = Path(output).resolve()
@@ -26,7 +26,7 @@ def run(config, output, stream=False, duration=None, throttle=0, steering=0, rec
         from isaacsim.core.rendering_manager import RenderingManager
         from scene import build_scene
         from hydrodynamics import forces
-        from cameras import CameraRecorder
+        from cameras import CameraRecorder, encode_frames
         from physics import attach_boat
         from commands import CommandError, CommandQueue, start_server
         from world import World
@@ -76,9 +76,10 @@ def run(config, output, stream=False, duration=None, throttle=0, steering=0, rec
                     ui.Button("Reset boat", clicked_fn=lambda: controls.update(reset=True))
                     ui.Label("Use the toolbar Play/Pause buttons to pause.")
             select_camera("/World/Overview")
-        if record:
+        if record or lockstep:
+            # Lockstep step commands return camera frames even when not recording.
             recorder = CameraRecorder(config, paths, run_output)
-        world = World(stage, config, paths, controls, sliders)
+        world = World(stage, config, paths, controls, sliders, initial_transform)
         commands = None
         if control_port:
             commands = CommandQueue()
@@ -92,10 +93,46 @@ def run(config, output, stream=False, duration=None, throttle=0, steering=0, rec
         elapsed, step, frame, next_record = 0.0, 0, 0, 0.0
         stopped = False
         wall_start = time.monotonic()
+        pending = None  # Lockstep step in progress: {"id", "command", "steps", "remaining"}
+
+        def log_command(command_id, command):
+            # Replayable record of what changed during the run, in simulation time.
+            with (run_output / "commands.jsonl").open("a") as log:
+                log.write(json.dumps({"time": elapsed, "id": command_id, **command}) + "\n")
+
+        def start_step(command_id, command):
+            nonlocal pending
+            if not lockstep:
+                raise CommandError("step requires starting the harbor with --lockstep")
+            if stopped:
+                raise CommandError("Press Play before stepping")
+            if "pose" in command:
+                world.place(body, command["pose"], indices)
+            steps = round(command["seconds"] / dt)
+            pending = {"id": command_id, "command": command, "steps": steps, "remaining": steps}
+
+        def finish_step():
+            nonlocal pending
+            command_id, command = pending["id"], pending["command"]
+            # Replicator annotators can trail the viewport by a frame; render twice before reading.
+            RenderingManager.render()
+            RenderingManager.render()
+            boat = (body.get_transforms()[0], body.get_velocities()[0])
+            result = {"steps": pending["steps"], "seconds": pending["steps"] * dt, "state": world.snapshot(elapsed, True, boat)}
+            if command["images"]:
+                result["frames"] = encode_frames(recorder.read(), command["depth"])
+            pending = None
+            commands.complete(command_id, result=result)
+            log_command(command_id, command)
+            publish_state()
 
         def apply_commands():
             for command_id, command in commands.drain():
                 try:
+                    if command["type"] == "step":
+                        start_step(command_id, command)
+                        # Leave later commands queued until this step has rendered.
+                        return
                     world.apply(command, None if stopped else body, indices)
                 except CommandError as error:
                     commands.complete(command_id, str(error))
@@ -106,9 +143,7 @@ def run(config, output, stream=False, duration=None, throttle=0, steering=0, rec
                     commands.complete(command_id, f"Internal error: {error}")
                     continue
                 commands.complete(command_id)
-                # Replayable record of what changed during the run, in simulation time.
-                with (run_output / "commands.jsonl").open("a") as log:
-                    log.write(json.dumps({"time": elapsed, "id": command_id, **command}) + "\n")
+                log_command(command_id, command)
 
         def publish_state():
             boat = None if stopped else (body.get_transforms()[0], body.get_velocities()[0])
@@ -122,9 +157,16 @@ def run(config, output, stream=False, duration=None, throttle=0, steering=0, rec
                     sim_view, body = attach_boat(SimulationManager, RenderingManager, tensors, stage_utils.get_stage_id(stage))
                     stopped = False
                 stopped = stopped or timeline.is_stopped()
-                if commands:
+                if pending and stopped:
+                    commands.complete(pending["id"], "Simulation stopped during the step")
+                    pending = None
+                if commands and not pending:
                     apply_commands()
-                if not timeline.is_playing():
+                if pending and pending["remaining"] == 0:
+                    finish_step()
+                    continue
+                if not timeline.is_playing() or (lockstep and not pending and step > 0):
+                    # Paused, or lockstep waiting for its next step: keep the viewer rendering.
                     RenderingManager.render()
                     if commands:
                         publish_state()
@@ -139,8 +181,12 @@ def run(config, output, stream=False, duration=None, throttle=0, steering=0, rec
                 velocity = body.get_velocities()[0].copy()
                 if not np.isfinite(transform).all() or not np.isfinite(velocity).all():
                     raise RuntimeError("Boat physics became non-finite")
-                force, torque = forces(config, transform[:3], transform[3:], velocity, controls["throttle"], controls["steering"])
-                body.apply_forces_and_torques_at_position(np.array([force], dtype=np.float32), np.array([torque], dtype=np.float32), None, indices, True)
+                if pending and not pending["command"]["physics"]:
+                    # Kinematic step: hold the supplied pose instead of integrating forces.
+                    world.place(body, pending["command"].get("pose", {}), indices)
+                else:
+                    force, torque = forces(config, transform[:3], transform[3:], velocity, controls["throttle"], controls["steering"])
+                    body.apply_forces_and_torques_at_position(np.array([force], dtype=np.float32), np.array([torque], dtype=np.float32), None, indices, True)
                 render = step % render_every == 0
                 SimulationManager.step(update_fabric=SimulationManager.is_fabric_enabled())
                 if render:
@@ -152,6 +198,8 @@ def run(config, output, stream=False, duration=None, throttle=0, steering=0, rec
                         print(f"HarborReady: first physics step completed; output={run_output}", flush=True)
                 elapsed += dt
                 step += 1
+                if pending:
+                    pending["remaining"] -= 1
                 if render and elapsed >= next_record:
                     transform = body.get_transforms()[0].copy()
                     velocity = body.get_velocities()[0].copy()
@@ -161,7 +209,7 @@ def run(config, output, stream=False, duration=None, throttle=0, steering=0, rec
                         recorder.capture(frame)
                     frame += 1
                     next_record += 1/config["simulation"]["record_hz"]
-                if stream:
+                if stream and not lockstep:
                     remaining = wall_start + elapsed - time.monotonic()
                     if remaining > 0:
                         time.sleep(min(remaining, dt))
