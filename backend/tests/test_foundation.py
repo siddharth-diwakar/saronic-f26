@@ -29,15 +29,16 @@ def test_missing_database_configuration_fails(monkeypatch):
         Settings(_env_file=None)
 
 
-def test_lifecycle_checks_database_and_releases_pool_without_domain_routes(monkeypatch):
+def test_lifecycle_checks_database_and_releases_pool(monkeypatch):
     engine = Mock()
     check = Mock()
     monkeypatch.setattr("saronic_api.main.build_engine", lambda _: engine)
     monkeypatch.setattr("saronic_api.main.check_database", check)
     with TestClient(create_app(settings())) as client:
         check.assert_called_once_with(engine)
-        assert client.get("/openapi.json").json()["paths"] == {}
-        assert client.get("/sessions").status_code == 404
+        paths = client.get("/openapi.json").json()["paths"]
+        assert "/sessions/{session_id}" in paths
+        assert client.get("/sessions").status_code == 405
     engine.dispose.assert_called_once()
 
 
