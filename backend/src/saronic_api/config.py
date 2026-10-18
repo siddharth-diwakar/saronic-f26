@@ -2,18 +2,40 @@
 
 from typing import Literal
 
-from pydantic import SecretStr, field_validator
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import ArgumentError
 
+from saronic_api.refs import DEFAULT_REPO_URL
+
 
 class Settings(BaseSettings):
+    # Aliased fields read only their SARONIC_* env names; pass the alias as a kwarg too.
     model_config = SettingsConfigDict(env_file=".env", extra="ignore", hide_input_in_errors=True)
 
     database_url: SecretStr
     app_env: Literal["development", "test", "production"] = "production"
     log_level: Literal["debug", "info", "warning", "error", "critical"] = "info"
+    # "worker" switches the container healthcheck to the worker heartbeat.
+    process_role: Literal["api", "worker"] = "api"
+
+    # Shared key for the session API (X-API-Key). Required when app_env is production.
+    api_key: SecretStr | None = Field(default=None, validation_alias="SARONIC_API_KEY")
+
+    # Brev: only the worker needs the API key.
+    brev_api_key: SecretStr | None = None
+    brev_launchable_id: str = "env-3KBxE5OmaRkasfoXEDUhXeFleBL"
+    brev_cli_path: str = "brev"
+    brev_command_timeout_s: float = Field(default=120, gt=0)
+
+    repo_url: str = Field(default=DEFAULT_REPO_URL, validation_alias="SARONIC_REPO_URL")
+    default_ref: str = Field(default="main", validation_alias="SARONIC_DEFAULT_REF")
+    max_active_sessions: int = Field(default=1, ge=1)
+    worker_poll_interval_s: float = Field(default=10, gt=0)
+    worker_heartbeat_path: str = "/tmp/saronic-worker-heartbeat"
+
+    # Optional Slack webhook for session failure alerts.
     slack_webhook_url: SecretStr | None = None
 
     @field_validator("database_url")
