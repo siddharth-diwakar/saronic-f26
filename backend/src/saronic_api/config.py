@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     database_url: SecretStr
     app_env: Literal["development", "test", "production"] = "production"
     log_level: Literal["debug", "info", "warning", "error", "critical"] = "info"
+    slack_webhook_url: SecretStr | None = None
 
     @field_validator("database_url")
     @classmethod
@@ -28,4 +29,21 @@ class Settings(BaseSettings):
             raise ValueError(
                 "DATABASE_URL must be a PostgreSQL URL with user, host, and database"
             ) from None
+        return value
+
+    @field_validator("slack_webhook_url", mode="before")
+    @classmethod
+    def blank_webhook_is_unset(cls, value: object) -> object:
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return None
+        return value
+
+    @field_validator("slack_webhook_url")
+    @classmethod
+    def webhook_is_http(cls, value: SecretStr | None) -> SecretStr | None:
+        if value is None:
+            return None
+        url = value.get_secret_value()
+        if not url.startswith(("https://", "http://")):
+            raise ValueError("SLACK_WEBHOOK_URL must be an HTTP URL")
         return value
