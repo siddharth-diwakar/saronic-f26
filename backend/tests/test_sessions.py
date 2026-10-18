@@ -266,7 +266,7 @@ def test_session_routes_map_conflicts_and_missing_sessions(monkeypatch):
     engine = Mock()
     monkeypatch.setattr("saronic_api.main.build_engine", lambda _: engine)
     monkeypatch.setattr("saronic_api.main.check_database", Mock())
-    app = create_app(_settings())
+    app = create_app(_settings(ingest_token="instance-token"))
 
     def override_db():
         yield Mock()
@@ -287,6 +287,7 @@ def test_session_routes_map_conflicts_and_missing_sessions(monkeypatch):
         conflict = client.post(
             f"/sessions/{session_id}/events",
             json={"step": "failed", "failed_step": "ready", "error_code": "LATE"},
+            headers={"X-Ingest-Token": "instance-token"},
         )
         assert conflict.status_code == 409
         created = datetime.now(UTC)

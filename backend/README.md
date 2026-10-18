@@ -3,8 +3,9 @@
 CPU-only FastAPI foundation, deployed independently of Isaac Sim and Brev.
 Session timeline routes and tables are in place. There are no Brev credentials,
 provisioning workers, or GPU dependencies yet. FastAPI's built-in `/docs`,
-`/redoc`, and `/openapi.json` are available; `/` returns 404. Authentication
-is not implemented.
+`/redoc`, and `/openapi.json` are available; `/` returns 404. Only the routes
+Brev instances call require a token (below); other authentication is not
+implemented.
 
 ## Layout
 
@@ -174,8 +175,14 @@ A retry increments `attempt` and appends a new `requested` event.
 
 Failure stores `failed_step`, `error_code`, `error_detail`, and an optional
 `log_tail` (last 200 lines or 64 KB). Set `SLACK_WEBHOOK_URL` to alert on
-failure. `deliver_stuck_alerts` can be called by a future worker for sessions
-that stay in progress; nothing schedules it yet.
+failure; the alert is sent after the response, so a slow webhook never delays
+the reporting instance. `deliver_stuck_alerts` can be called by a future worker
+for sessions that stay in progress; nothing schedules it yet.
+
+`/events` and `/logs` are called by Brev instances over the internet, so they
+require an `X-Ingest-Token` header matching `INGEST_TOKEN` (a runtime secret).
+In production without `INGEST_TOKEN` they return 503; in development they stay
+open. `scripts/report-step.py` in the repository root sends these reports.
 
 ## Team conventions
 

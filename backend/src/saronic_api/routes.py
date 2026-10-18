@@ -1,14 +1,18 @@
 """Session timeline routes. Callers commit; uncommitted work rolls back on close."""
 
+import hmac
+import logging
 from contextlib import contextmanager
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Request
+from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
 from saronic_api.config import Settings
 from saronic_api.database import get_db
+from saronic_api.log import log_context
 from saronic_api.models import SessionStep
 from saronic_api.schemas import (
     SessionAttemptCreate,
@@ -30,6 +34,7 @@ from saronic_api.timeline import (
     start_attempt,
 )
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/sessions", tags=["sessions"])
 
 
@@ -39,6 +44,24 @@ def get_settings(request: Request) -> Settings:
 
 Db = Annotated[Session, Depends(get_db)]
 CurrentSettings = Annotated[Settings, Depends(get_settings)]
+
+
+def require_ingest_token(
+    settings: CurrentSettings, x_ingest_token: Annotated[str | None, Header()] = None
+) -> None:
+    """Brev instances report over the internet, so their routes need the shared token."""
+    expected = settings.ingest_token
+    if expected is None:
+        if settings.app_env == "production":
+            raise HTTPException(status_code=503, detail="Instance reporting is not configured")
+        return
+    if x_ingest_token is None or not hmac.compare_digest(
+        x_ingest_token.encode(), expected.get_secret_value().encode()
+    ):
+        raise HTTPException(status_code=401, detail="Invalid ingest token")
+
+
+InstanceReport = Depends(require_ingest_token)
 
 
 @router.post("", response_model=SessionOut, status_code=201)
@@ -53,10 +76,12 @@ def get_session(session_id: UUID, db: Db) -> SessionOut:
     return _detail(db, session_id)
 
 
-@router.post("/{session_id}/events", response_model=SessionOut)
+@router.post("/{session_id}/events", response_model=SessionOut, dependencies=[InstanceReport])
 def record_event(
     session_id: UUID,
     body: SessionEventCreate,
+    request: Request,
+    background: BackgroundTasks,
     db: Db,
     settings: CurrentSettings,
 ) -> SessionOut:
@@ -73,14 +98,31 @@ def record_event(
             log_tail=body.log_tail,
         )
     db.commit()
+    with log_context(session_id=str(session_id), brev_instance_id=body.brev_instance_id):
+        log = logger.error if result.status is SessionStep.FAILED else logger.info
+        log(
+            "Session step recorded",
+            extra={
+                "step": body.step.value,
+                "status": result.status.value,
+                "changed": result.changed,
+            },
+        )
     if result.changed and result.status is SessionStep.FAILED:
-        failed = load_session(db, session_id)
-        if failed is not None:
-            deliver_failure_alert(db, settings, failed)
+        # After the response: a slow webhook must not hold up the reporting instance.
+        background.add_task(_send_failure_alert, request.app.state.engine, settings, session_id)
     return _detail(db, session_id)
 
 
-@router.post("/{session_id}/logs", response_model=SessionOut)
+def _send_failure_alert(engine: Engine, settings: Settings, session_id: UUID) -> None:
+    # The request's session is closed by now; the alert claim needs its own transaction.
+    with Session(engine) as db:
+        failed = load_session(db, session_id)
+        if failed is not None:
+            deliver_failure_alert(db, settings, failed)
+
+
+@router.post("/{session_id}/logs", response_model=SessionOut, dependencies=[InstanceReport])
 def store_log(session_id: UUID, body: SessionLogCreate, db: Db) -> SessionOut:
     with _session_errors():
         record_log(db, session_id, source=body.source, body=body.body, attempt=body.attempt)

@@ -15,6 +15,9 @@ class Settings(BaseSettings):
     app_env: Literal["development", "test", "production"] = "production"
     log_level: Literal["debug", "info", "warning", "error", "critical"] = "info"
     slack_webhook_url: SecretStr | None = None
+    # Shared secret Brev instances send to report steps and logs (X-Ingest-Token).
+    # Required in production; unset elsewhere leaves those routes open for local work.
+    ingest_token: SecretStr | None = None
     # Tags every log line with the deployed revision. Coolify provides SOURCE_COMMIT.
     git_commit: str | None = Field(
         default=None, validation_alias=AliasChoices("GIT_COMMIT", "SOURCE_COMMIT")
