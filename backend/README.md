@@ -1,9 +1,10 @@
 # Backend infrastructure
 
 CPU-only FastAPI foundation, deployed independently of Isaac Sim and Brev.
-There are **no domain routes, tables, Brev credentials, provisioning workers,
-or GPU dependencies** yet. FastAPI's built-in `/docs`, `/redoc`, and
-`/openapi.json` are available; `/` returns 404. Authentication is not implemented.
+Session timeline routes and tables are in place. There are no Brev credentials,
+provisioning workers, or GPU dependencies yet. FastAPI's built-in `/docs`,
+`/redoc`, and `/openapi.json` are available; `/` returns 404. Authentication
+is not implemented.
 
 ## Layout
 
@@ -17,9 +18,13 @@ backend/
     main.py                  Application factory and startup/shutdown
     config.py                Validated runtime settings
     database.py              SQLAlchemy engine, session dependency, model base
+    models.py                Session timeline tables
+    timeline.py              Step changes, log excerpts, Slack alerts
+    schemas.py               Session request and response bodies
+    routes.py                Session HTTP routes
     healthcheck.py           Container probe; no custom HTTP route
-  alembic.ini, migrations/   Schema migration scaffolding; no revisions yet
-  tests/                     Startup/configuration checks without a database
+  alembic.ini, migrations/   Schema migrations, including the session timeline
+  tests/                     Timeline rules and startup checks without a database
 ```
 
 ## Local development
@@ -133,8 +138,9 @@ deployed by creating this folder locally.
    using the URL and secret shown by Coolify. Pushes to the selected branch
    should trigger a deployment; verify this with the first approved change.
 8. Deploy. Check build/runtime logs for `Database connection verified; API
-   foundation ready`, a healthy container, and an empty schema at
-   `https://<your-domain>/docs`.
+   foundation ready` and a healthy container. Apply migrations once per
+   environment (`alembic upgrade head` from `/app`) before expecting session
+   data. Confirm `https://<your-domain>/docs` lists the session routes.
 
 The container runs as a non-root user. No database migrations run automatically
 at startup, and no database tables are created by the app. The DB URL is needed
@@ -145,10 +151,36 @@ configuration; do not reuse production credentials/data by default.
 
 See [Coolify Dockerfile deployments](https://coolify.io/docs/applications/builds/dockerfile).
 
+## Session timeline
+
+Apply the revision once per environment. Startup does not run migrations.
+
+```bash
+cd backend
+uv run --frozen alembic upgrade head
+```
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `POST` | `/sessions` | Open a session at `requested` |
+| `GET` | `/sessions/{id}` | Status, full event timeline, current attempt's log excerpts |
+| `POST` | `/sessions/{id}/events` | Next step, failure, teardown, or stop |
+| `POST` | `/sessions/{id}/logs` | Capped startup log (`bootstrap`, `docker_build`, `isaac_launch`) |
+| `POST` | `/sessions/{id}/attempts` | Retry after `failed` or `stopped`; prior events stay |
+
+Each step change is one transaction: the session row and the new event commit
+together. Stopping a live session appends `teardown_requested`, then `stopped`.
+A retry increments `attempt` and appends a new `requested` event.
+
+Failure stores `failed_step`, `error_code`, `error_detail`, and an optional
+`log_tail` (last 200 lines or 64 KB). Set `SLACK_WEBHOOK_URL` to alert on
+failure. `deliver_stuck_alerts` can be called by a future worker for sessions
+that stay in progress; nothing schedules it yet.
+
 ## Team conventions
 
-- Add domain routers under `src/saronic_api/` and register them in `create_app`
-  when the team starts API implementation. Use synchronous handlers with the
+- Session routes are registered in `create_app`. Add further domain routers
+  under `src/saronic_api/` the same way. Use synchronous handlers with the
   provided synchronous DB dependency, or explicitly offload DB work from async
   handlers.
 - Use `Depends(get_db)` for request-scoped sessions. Commit transactions
