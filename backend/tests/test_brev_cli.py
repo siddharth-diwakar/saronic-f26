@@ -85,9 +85,20 @@ def test_subprocess_options_and_key_only_in_env(monkeypatch):
 
 
 def test_create_falls_back_when_stdout_differs_or_is_empty():
-    brev, _ = client(done(stdout="saronic-abc-1\n"), done(stdout=""))
+    brev, _ = client(
+        done(stdout="saronic-abc-1\n"),
+        done(stdout=""),
+        done(stdout="A new version of brev has been released!\n"),
+    )
     assert brev.create(name="saronic-abc", launchable_id=LAUNCHABLE, params={}) == "saronic-abc-1"
     assert brev.create(name="saronic-abc", launchable_id=LAUNCHABLE, params={}) == "saronic-abc"
+    assert brev.create(name="saronic-abc", launchable_id=LAUNCHABLE, params={}) == "saronic-abc"
+
+
+def test_list_all_flag():
+    runner = FakeRunner(done(stdout=ls_json()))
+    CliBrevClient(api_key=API_KEY, runner=runner, list_all=True).list_instances()
+    assert runner.argv == ["brev", "ls", "--json", "--all"]
 
 
 @pytest.mark.parametrize("name", ["-rm", "a b", "x" * 64, "", ".hidden", "a/b"])

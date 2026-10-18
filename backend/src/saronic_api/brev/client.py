@@ -57,8 +57,12 @@ class BrevClient(Protocol):
     def delete(self, name: str) -> None: ...
 
 
+def _is_instance_name(name: str) -> bool:
+    return len(name) <= INSTANCE_NAME_MAX_LEN and bool(INSTANCE_NAME_RE.fullmatch(name))
+
+
 def validate_instance_name(name: str) -> None:
-    if len(name) > INSTANCE_NAME_MAX_LEN or not INSTANCE_NAME_RE.fullmatch(name):
+    if not _is_instance_name(name):
         raise ValueError(
             f"Invalid Brev instance name {name!r}: must match {INSTANCE_NAME_RE.pattern} "
             f"and be at most {INSTANCE_NAME_MAX_LEN} characters"
@@ -73,6 +77,7 @@ class CliBrevClient:
         cli_path: str = "brev",
         timeout_s: float = 120,
         runner: Runner = subprocess.run,
+        list_all: bool = False,
     ) -> None:
         if not api_key:
             raise ValueError("A Brev API key is required")
@@ -80,6 +85,8 @@ class CliBrevClient:
         self._cli_path = cli_path
         self._timeout_s = timeout_s
         self._runner = runner
+        # API-key `ls` already lists the whole org; the spike uses this to double-check.
+        self._list_all = list_all
 
     def create(self, *, name: str, launchable_id: str, params: dict[str, str]) -> str:
         validate_instance_name(name)
@@ -94,7 +101,8 @@ class CliBrevClient:
         if result.returncode != 0:
             raise self._failure("create", result)
 
-        names = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+        lines = (line.strip() for line in result.stdout.splitlines())
+        names = [line for line in lines if _is_instance_name(line)]
         if name in names:
             return name
         # Spike will confirm whether Brev ever renames a single-count create.
@@ -108,7 +116,7 @@ class CliBrevClient:
         return next((i for i in self.list_instances() if i.name == name), None)
 
     def list_instances(self) -> list[BrevInstance]:
-        result = self._run(["ls", "--json"])
+        result = self._run(["ls", "--json", "--all"] if self._list_all else ["ls", "--json"])
         if result.returncode != 0:
             raise self._failure("ls", result)
         return _parse_instances(result.stdout)
