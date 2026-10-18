@@ -16,16 +16,23 @@ class CameraRecorder:
             self.products.append(product)
             self.annotators.append((camera["name"], rgb, depth))
 
-    def capture(self, frame):
-        import numpy as np
-        from PIL import Image
+    def read(self):
+        """Latest frame per camera: {name: (RGB uint8 HxWx3, depth float32 HxW in meters)}."""
+        frames = {}
         for name, rgb, depth in self.annotators:
             color, distance = rgb.get_data(), depth.get_data()
             if color.size == 0 or distance.size == 0:
                 raise RuntimeError(f"Camera {name} has no rendered data")
+            frames[name] = (color[..., :3], distance)
+        return frames
+
+    def capture(self, frame):
+        import numpy as np
+        from PIL import Image
+        for name, (color, distance) in self.read().items():
             folder = self.output / "cameras" / name
             folder.mkdir(parents=True, exist_ok=True)
-            Image.fromarray(color[..., :3]).save(folder / f"{frame:06d}.png")
+            Image.fromarray(color).save(folder / f"{frame:06d}.png")
             np.save(folder / f"{frame:06d}_depth.npy", distance)
 
     def close(self):
