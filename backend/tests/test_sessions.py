@@ -47,6 +47,7 @@ def _settings(**overrides):
     return Settings(
         _env_file=None,
         database_url="postgresql://team:secret@database:5432/saronic",
+        app_env="test",
         **overrides,
     )
 
