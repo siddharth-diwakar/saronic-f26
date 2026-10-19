@@ -12,7 +12,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
 from saronic_api.sessions.models import SimSession
-from saronic_api.sessions.service import SessionRecord
+from saronic_api.sessions.service import SessionRecord, apply_claim
 from saronic_api.sessions.status import MONITORED_STATUSES, SessionStatus
 
 
@@ -50,8 +50,7 @@ class SqlSessionStore:
             ).all()
             claimed = []
             for record in records:
-                record.status = SessionStatus.PROVISIONING.value
-                record.provisioning_started_at = now
+                apply_claim(record, now)
                 claimed.append(ClaimedSession(record.id, record.instance_name, record.commit_sha))
             db.commit()
         return claimed

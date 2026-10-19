@@ -69,6 +69,13 @@ def test_full_lifecycle_requested_to_stopped():
     assert record.error_code is None and record.ended_at == clock.now
     assert record.brev_status is None
     assert len(brev.calls_named("create")) == 1
+    assert record.steps == [
+        "requested",
+        "provisioning",
+        "instance_up",
+        "teardown_requested",
+        "stopped",
+    ]
 
 
 def test_create_error_goes_to_stopping_then_deletes_then_failed():
@@ -90,6 +97,10 @@ def test_create_error_goes_to_stopping_then_deletes_then_failed():
     clock.advance(MISSING_GRACE.total_seconds())
     w.tick()
     assert record.status == "failed" and record.ended_at == clock.now
+    assert record.steps == ["requested", "provisioning", "failed", "teardown_requested", "stopped"]
+    failed = record.events[2]
+    assert failed.failed_step == "instance_up" and failed.error_code == "brev_create_failed"
+    assert "quota exceeded" in failed.error_detail
 
 
 def test_create_error_where_instance_was_created_anyway_is_deleted():
@@ -135,6 +146,8 @@ def test_brev_failure_while_running_deletes_and_fails():
     clock.advance(10)
     w.tick()
     assert record.status == "failed"
+    assert record.steps[-4:] == ["instance_up", "failed", "teardown_requested", "stopped"]
+    assert record.failed_step == "container_built"
 
 
 def test_missing_instance_after_grace_fails_without_new_create():
@@ -151,6 +164,7 @@ def test_missing_instance_after_grace_fails_without_new_create():
     assert record.status == "failed"
     assert record.error_code == "brev_instance_missing"
     assert len(brev.calls_named("create")) == 1
+    assert record.steps == ["requested", "provisioning", "failed", "teardown_requested", "stopped"]
 
 
 # --- Races and idempotency ---
@@ -171,6 +185,7 @@ def test_stop_during_failed_create_is_not_overwritten():
     clock.advance(MISSING_GRACE.total_seconds())
     w.tick()
     assert record.status == "stopped"
+    assert record.steps == ["requested", "provisioning", "teardown_requested", "stopped"]
 
 
 def test_stop_during_successful_create_never_reports_running():
@@ -406,6 +421,7 @@ def insert(engine, status="requested"):
             SimSession(
                 id=session_id,
                 status=status,
+                step="requested",
                 ref="main",
                 commit_sha=SHA,
                 instance_name=instance_name_for(session_id),
@@ -418,6 +434,11 @@ def insert(engine, status="requested"):
 def load(engine, session_id):
     with Session(engine) as db:
         return db.get(SimSession, session_id)
+
+
+def steps(engine, session_id):
+    with Session(engine) as db:
+        return [event.step for event in db.get(SimSession, session_id).events]
 
 
 def sql_stop(engine, session_id, clock):
@@ -447,6 +468,13 @@ def test_sql_lifecycle_and_create_error(db_engine):
     clock.advance(10)
     w.tick()
     assert load(db_engine, ok).status == "stopped"
+    assert steps(db_engine, ok) == [
+        "requested",
+        "provisioning",
+        "instance_up",
+        "teardown_requested",
+        "stopped",
+    ]
 
     brev.create_error = BrevError("boom")
     bad = insert(db_engine)
@@ -457,6 +485,13 @@ def test_sql_lifecycle_and_create_error(db_engine):
     clock.advance(MISSING_GRACE.total_seconds())
     w.tick()
     assert load(db_engine, bad).status == "failed"
+    assert steps(db_engine, bad) == [
+        "requested",
+        "provisioning",
+        "failed",
+        "teardown_requested",
+        "stopped",
+    ]
 
 
 def test_sql_stop_racing_create_is_not_overwritten(db_engine):

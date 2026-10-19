@@ -8,7 +8,6 @@ from starlette.concurrency import run_in_threadpool
 
 from saronic_api.config import Settings
 from saronic_api.database import build_engine, check_database
-from saronic_api.routes import router as timeline_router
 from saronic_api.sessions.router import router as sessions_router
 
 logger = logging.getLogger(__name__)
@@ -36,11 +35,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app = FastAPI(
         title="Saronic API",
         version="0.1.0",
-        description="On-demand Brev GPU simulation sessions.",
+        description="On-demand Brev GPU simulation sessions and their startup timeline.",
         lifespan=lifespan,
     )
     app.include_router(sessions_router)
-    app.include_router(timeline_router)
     return app
 
 

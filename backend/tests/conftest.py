@@ -1,7 +1,7 @@
 """PostgreSQL fixtures. Tests using `db_engine` are skipped unless TEST_DATABASE_URL is set.
 
-Point TEST_DATABASE_URL at a throwaway database: it is migrated to head and sim_sessions is
-truncated before each test. SQLite can't stand in (SKIP LOCKED, FOR UPDATE, advisory locks).
+Point TEST_DATABASE_URL at a throwaway database: it is migrated to head and sim_sessions
+(with its timeline tables) is truncated before each test. SQLite can't stand in (SKIP LOCKED, FOR UPDATE, advisory locks).
 """
 
 import os
@@ -37,5 +37,5 @@ def migrated_engine():
 @pytest.fixture
 def db_engine(migrated_engine):
     with migrated_engine.begin() as connection:
-        connection.execute(text("TRUNCATE sim_sessions"))
+        connection.execute(text("TRUNCATE sim_sessions CASCADE"))
     return migrated_engine

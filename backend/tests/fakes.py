@@ -9,6 +9,7 @@ from datetime import UTC, datetime, timedelta
 
 from saronic_api.brev import BrevError, BrevInstance, BrevNameTaken
 from saronic_api.sessions.models import instance_name_for
+from saronic_api.sessions.service import apply_claim
 from saronic_api.sessions.store import ClaimedSession
 
 SHA = "c" * 40
@@ -91,6 +92,7 @@ class FakeRecord:
     id: uuid.UUID
     status: str
     instance_name: str
+    step: str = "requested"
     commit_sha: str = SHA
     ref: str = "main"
     instance_id: str | None = None
@@ -100,12 +102,18 @@ class FakeRecord:
     brev_checked_at: datetime | None = None
     error_code: str | None = None
     error_message: str | None = None
+    failed_step: str | None = None
     provisioning_started_at: datetime | None = None
     running_at: datetime | None = None
     stop_requested_at: datetime | None = None
     delete_requested_at: datetime | None = None
     ended_at: datetime | None = None
     created_at: datetime = field(default_factory=lambda: START)
+    events: list = field(default_factory=list)  # SessionEvent objects, oldest first
+
+    @property
+    def steps(self) -> list[str]:
+        return [event.step for event in self.events]
 
 
 class InMemoryStore:
@@ -128,8 +136,7 @@ class InMemoryStore:
             if len(claimed) == limit:
                 break
             if record.status == "requested" and record.id not in self.held_locks:
-                record.status = "provisioning"
-                record.provisioning_started_at = now
+                apply_claim(record, now)
                 claimed.append(ClaimedSession(record.id, record.instance_name, record.commit_sha))
         return claimed
 

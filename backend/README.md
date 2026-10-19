@@ -25,8 +25,10 @@ All routes require the `X-API-Key` header (see `SARONIC_API_KEY` below).
 | Route | Result |
 | --- | --- |
 | `POST /api/v1/sessions` with optional body `{"ref": "main"}` | **202** with the session. `ref` is a branch, tag, `refs/heads/<x>`, `refs/tags/<x>` or full 40-character SHA, and defaults to `SARONIC_DEFAULT_REF`. **422** for an invalid, ambiguous or unknown ref, **502** if GitHub is unreachable, **409** when `MAX_ACTIVE_SESSIONS` sessions are already active. |
-| `GET /api/v1/sessions/{id}` | **200** with the session, or **404**. |
+| `GET /api/v1/sessions/{id}` | **200** with the session, its timeline and log excerpts, or **404**. |
 | `POST /api/v1/sessions/{id}/stop` | **202** with the session, or **404**. Idempotent. |
+| `POST /api/v1/sessions/{id}/events` | For the instance: report the next startup step (see [Timeline](#timeline)). **200**, **404**, **409** if it is not the next step or the session is no longer starting, **422** for an invalid step or failure. |
+| `POST /api/v1/sessions/{id}/logs` with `{"source": "bootstrap", "body": "..."}` | For the instance: store a capped startup log (`bootstrap`, `docker_build`, `isaac_launch` or `failure_tail`). **200** or **404**. |
 
 The ref is resolved to a commit when the session is created. The instance always
 runs that exact commit (`SARONIC_REF=<sha>`), even if the branch moves later.
@@ -37,6 +39,38 @@ that the sim is ready. The response's `brev` object carries Brev's raw `status`,
 `build_status` and `health_status` from the worker's last poll. Stopping always
 **deletes** the Brev instance (`brev stop` would keep billing for the disk), and
 every failure path that may have created an instance also deletes it.
+
+### Timeline
+
+`status` is the worker's view of Brev. `step` and `timeline` record how far startup
+got, one event per step with a timestamp, the instance and the commit:
+
+```text
+requested → provisioning → instance_up → container_built → scene_loaded
+          → physics_running → cameras_ready → ready
+```
+
+plus `failed`, `teardown_requested` and `stopped`. The backend records `requested`
+through `instance_up` and the teardown steps as `status` changes. The instance
+reports `container_built` through `ready` with `POST /events {"step": "..."}`, one
+step at a time. A step that is already recorded is a no-op, so reports can be retried.
+`container_built` arriving before the worker has seen Brev `RUNNING` also records
+`instance_up`.
+
+A failure, whether the worker detects it or the instance reports
+`{"step": "failed", "failed_step": "<step that failed>", "error_code": "...",
+"error_detail": "...", "log_tail": "..."}`, sets `error` (with `failed_step`), records
+`failed` and `teardown_requested`, and moves the session to `stopping` so the worker
+deletes the instance. `stopped` is recorded once Brev no longer lists it. Logs keep the
+last 200 lines or 64 KB per source; `log_tail` is stored as `failure_tail`. A retry is a
+new session.
+
+Set `SLACK_WEBHOOK_URL` to post a Slack message when the instance reports a failure
+(once per session). Failures the worker detects are not posted yet, and
+`deliver_stuck_alerts` (sessions with no new step for a while) is not scheduled yet.
+
+Nothing on the instance calls `/events` or `/logs` yet; the bootstrap needs to send
+them. They use the same `X-API-Key` as other routes.
 
 ## Layout
 
@@ -51,15 +85,12 @@ backend/
     main.py                  Application factory and startup/shutdown
     config.py                Validated runtime settings
     database.py              SQLAlchemy engine, session dependency, model base
-    models.py                Session timeline tables
-    timeline.py              Step changes, log excerpts, Slack alerts
-    schemas.py               Session request and response bodies
-    routes.py                Session HTTP routes
     healthcheck.py           Container probe (API or worker heartbeat); no HTTP route
     auth.py                  X-API-Key dependency
     refs.py                  Branch/tag/SHA → commit resolution (git ls-remote)
     brev/client.py           BrevClient protocol and CLI implementation
-    sessions/                Model, endpoints, state machine (transitions.py), worker store
+    sessions/                Models, endpoints, state machine (transitions.py), worker store,
+                             timeline steps, log excerpts and Slack alerts (timeline.py)
     worker.py                Background worker entry point
   alembic.ini, migrations/   Schema migrations
   tests/                     Unit tests; PostgreSQL tests run when TEST_DATABASE_URL is set
@@ -85,6 +116,7 @@ Settings come from environment variables (and `.env` locally). Environment wins.
 | `WORKER_POLL_INTERVAL_S` | worker | `10` | |
 | `WORKER_HEARTBEAT_PATH` | worker | `/tmp/saronic-worker-heartbeat` | Written after every tick and Brev call |
 | `PROCESS_ROLE` | healthcheck | `api` | Set to `worker` on the worker app |
+| `SLACK_WEBHOOK_URL` | API | none | Optional. Slack incoming webhook for reported failures |
 
 The Brev key is passed to the CLI only through the child process's environment,
 never in argv, and is redacted from error messages.
@@ -269,8 +301,8 @@ at runtime only, so image builds don't require database access.
 Migrations are an explicit, once-per-deployment release step; neither the API
 nor the worker runs them on startup. After deploying a version that adds a
 migration (including the first deployment of the sessions feature, which
-creates `sim_sessions`), open the **API application's terminal** in Coolify and
-run from `/app`:
+creates `sim_sessions` and keys the timeline tables on it), open the **API
+application's terminal** in Coolify and run from `/app`:
 
 ```bash
 alembic upgrade head
@@ -279,6 +311,10 @@ alembic upgrade head
 `alembic current` shows the applied revision. Run migrations before the worker
 starts processing sessions; a worker started against an unmigrated database logs
 errors each tick until the table exists.
+
+Revision `e9155e165f02` drops the earlier `sessions` table and deletes any rows in
+`session_events`, `session_log_excerpts` and `session_alerts`: they belonged to
+`sessions` rows, which cannot be mapped to `sim_sessions`.
 
 ## Coolify: worker application
 
@@ -326,32 +362,6 @@ configuration; do not reuse production credentials/data by default.
 
 See [Coolify Dockerfile deployments](https://coolify.io/docs/applications/builds/dockerfile).
 
-## Session timeline
-
-Apply the revision once per environment. Startup does not run migrations.
-
-```bash
-cd backend
-uv run --frozen alembic upgrade head
-```
-
-| Method | Path | Purpose |
-| --- | --- | --- |
-| `POST` | `/sessions` | Open a session at `requested` |
-| `GET` | `/sessions/{id}` | Status, full event timeline, current attempt's log excerpts |
-| `POST` | `/sessions/{id}/events` | Next step, failure, teardown, or stop |
-| `POST` | `/sessions/{id}/logs` | Capped startup log (`bootstrap`, `docker_build`, `isaac_launch`) |
-| `POST` | `/sessions/{id}/attempts` | Retry after `failed` or `stopped`; prior events stay |
-
-Each step change is one transaction: the session row and the new event commit
-together. Stopping a live session appends `teardown_requested`, then `stopped`.
-A retry increments `attempt` and appends a new `requested` event.
-
-Failure stores `failed_step`, `error_code`, `error_detail`, and an optional
-`log_tail` (last 200 lines or 64 KB). Set `SLACK_WEBHOOK_URL` to alert on
-failure. `deliver_stuck_alerts` can be called by a future worker for sessions
-that stay in progress; nothing schedules it yet.
-
 ## Team conventions
 
 - Session routes are registered in `create_app`. Add further domain routers
@@ -377,7 +387,8 @@ that stay in progress; nothing schedules it yet.
   `uv.lock`. Container builds and team installs use the same frozen lockfile.
 - Brev calls belong in the worker, never in API handlers. The session state
   machine is the pure `decide()` in `sessions/transitions.py`; change and test
-  transitions there.
+  transitions there. Timeline events follow from status changes through
+  `sync_timeline()` in `sessions/timeline.py`; call it after any new status change.
 
 ## Verification
 

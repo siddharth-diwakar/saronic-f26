@@ -1,15 +1,17 @@
 """Apply state-machine decisions to a session record.
 
 Records are SimSession rows (or any object with the same attributes, as in the tests).
-Callers hold the row lock and commit; nothing here calls Brev or the database.
+Callers hold the row lock and commit; nothing here calls Brev or the database. Every
+status change also records the timeline steps it implies (timeline.sync_timeline).
 """
 
 import uuid
 from datetime import datetime
-from typing import Protocol
+from typing import Any, Protocol
 
 from saronic_api.brev import BrevInstance
 from saronic_api.sessions.status import SessionStatus
+from saronic_api.sessions.timeline import sync_timeline
 from saronic_api.sessions.transitions import NO_CHANGE, Action, SessionSnapshot, decide, stop_target
 
 ERROR_MESSAGE_MAX = 2000
@@ -18,6 +20,7 @@ ERROR_MESSAGE_MAX = 2000
 class SessionRecord(Protocol):
     id: uuid.UUID
     status: str
+    step: str
     instance_name: str
     commit_sha: str
     instance_id: str | None
@@ -27,11 +30,13 @@ class SessionRecord(Protocol):
     brev_checked_at: datetime | None
     error_code: str | None
     error_message: str | None
+    failed_step: str | None
     provisioning_started_at: datetime | None
     running_at: datetime | None
     stop_requested_at: datetime | None
     delete_requested_at: datetime | None
     ended_at: datetime | None
+    events: list[Any]  # SessionEvent rows, oldest first
 
 
 def snapshot(record: SessionRecord) -> SessionSnapshot:
@@ -45,6 +50,13 @@ def snapshot(record: SessionRecord) -> SessionSnapshot:
     )
 
 
+def apply_claim(record: SessionRecord, now: datetime) -> None:
+    """The worker took a requested session; it creates the instance next."""
+    record.status = SessionStatus.PROVISIONING.value
+    record.provisioning_started_at = now
+    sync_timeline(record, now)
+
+
 def apply_stop(record: SessionRecord, now: datetime) -> bool:
     target = stop_target(SessionStatus(record.status))
     if target is None:
@@ -54,6 +66,7 @@ def apply_stop(record: SessionRecord, now: datetime) -> bool:
     else:
         record.stop_requested_at = now
     record.status = target.value
+    sync_timeline(record, now)
     return True
 
 
@@ -85,9 +98,10 @@ def apply_action(record: SessionRecord, action: Action, now: datetime) -> None:
             record.ended_at = now
     if action.delete:
         record.delete_requested_at = now
+    sync_timeline(record, now)
 
 
-def apply_create_failure(record: SessionRecord, message: str) -> bool:
+def apply_create_failure(record: SessionRecord, message: str, now: datetime) -> bool:
     """A create error may still have created the instance, so stop (and delete) it.
 
     Only applies while provisioning, so a concurrent stop is never overwritten.
@@ -96,6 +110,7 @@ def apply_create_failure(record: SessionRecord, message: str) -> bool:
         return False
     set_error(record, "brev_create_failed", message)
     record.status = SessionStatus.STOPPING.value
+    sync_timeline(record, now)
     return True
 
 

@@ -78,11 +78,16 @@ class Worker:
             # stopping, which always ends in a delete.
             except BrevError as exc:
                 logger.warning("brev create failed: %s", exc, extra=extra)
-                self._update(claimed, partial(apply_create_failure, message=str(exc)))
+                failure = partial(apply_create_failure, message=str(exc), now=self._clock())
+                self._update(claimed, failure)
                 continue
             except Exception:
                 logger.exception("Unexpected error from brev create", extra=extra)
-                failure = partial(apply_create_failure, message="Unexpected error in brev create")
+                failure = partial(
+                    apply_create_failure,
+                    message="Unexpected error in brev create",
+                    now=self._clock(),
+                )
                 self._update(claimed, failure)
                 continue
             finally:

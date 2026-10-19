@@ -12,13 +12,8 @@ SESSION_PATHS = {
     "/api/v1/sessions",
     "/api/v1/sessions/{session_id}",
     "/api/v1/sessions/{session_id}/stop",
-}
-TIMELINE_PATHS = {
-    "/sessions",
-    "/sessions/{session_id}",
-    "/sessions/{session_id}/events",
-    "/sessions/{session_id}/logs",
-    "/sessions/{session_id}/attempts",
+    "/api/v1/sessions/{session_id}/events",
+    "/api/v1/sessions/{session_id}/logs",
 }
 
 
@@ -54,9 +49,9 @@ def test_lifecycle_checks_database_and_releases_pool_and_exposes_session_routes(
     monkeypatch.setattr("saronic_api.main.check_database", check)
     with TestClient(create_app(settings())) as client:
         check.assert_called_once_with(engine)
-        assert set(client.get("/openapi.json").json()["paths"]) == (SESSION_PATHS | TIMELINE_PATHS)
+        assert set(client.get("/openapi.json").json()["paths"]) == SESSION_PATHS
         assert client.get("/").status_code == 404
-        assert client.get("/sessions").status_code == 405
+        assert client.get("/sessions").status_code == 404
     engine.dispose.assert_called_once()
 
 

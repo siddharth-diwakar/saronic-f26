@@ -2,7 +2,6 @@
 
 from alembic import context
 
-import saronic_api.models
 import saronic_api.sessions.models  # noqa: F401
 from saronic_api.config import Settings
 from saronic_api.database import Base, build_engine, database_url
