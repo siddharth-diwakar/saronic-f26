@@ -6,7 +6,7 @@ import traceback
 from pathlib import Path
 
 
-def run(config, output, stream=False, duration=None, throttle=0, steering=0, record=False, boat_usd=None):
+def run(config, output, stream=False, duration=None, throttle=0, steering=0, record=False, boat_usd=None, control_port=None):
     import numpy as np
     from isaacsim import SimulationApp
     output = Path(output).resolve()
@@ -17,6 +17,7 @@ def run(config, output, stream=False, duration=None, throttle=0, steering=0, rec
     app = SimulationApp({"headless": True, "hide_ui": False if stream else True, "sync_loads": True}, experience=experience)
     recorder = None
     timeline = None
+    server = None
     try:
         import omni.physics.tensors as tensors
         import omni.kit.viewport.utility as viewport_utils
@@ -27,6 +28,8 @@ def run(config, output, stream=False, duration=None, throttle=0, steering=0, rec
         from hydrodynamics import forces
         from cameras import CameraRecorder
         from physics import attach_boat
+        from commands import CommandError, CommandQueue, start_server
+        from world import World
         from isaacsim.core.experimental.utils import stage as stage_utils
         np.random.seed(config["simulation"]["seed"])
         stage, paths = build_scene(config, boat_usd)
@@ -46,6 +49,7 @@ def run(config, output, stream=False, duration=None, throttle=0, steering=0, rec
         initial_transform = body.get_transforms().copy()
         controls = {"throttle": throttle, "steering": steering, "reset": False}
         window = None
+        sliders = {}
         if stream:
             import omni.ui as ui
             window = ui.Window("Boat controls", width=330, height=220)
@@ -59,10 +63,12 @@ def run(config, output, stream=False, duration=None, throttle=0, steering=0, rec
                     throttle_slider = ui.FloatSlider(min=-1, max=1)
                     throttle_slider.model.set_value(throttle)
                     throttle_slider.model.add_value_changed_fn(lambda m: controls.update(throttle=m.as_float))
+                    sliders["throttle"] = throttle_slider
                     ui.Label("Steering (-1 starboard, +1 port)")
                     steering_slider = ui.FloatSlider(min=-1, max=1)
                     steering_slider.model.set_value(steering)
                     steering_slider.model.add_value_changed_fn(lambda m: controls.update(steering=m.as_float))
+                    sliders["steering"] = steering_slider
                     with ui.HStack():
                         ui.Button("Overview", clicked_fn=lambda: select_camera("/World/Overview"))
                         for name, path in zip([c["name"] for c in config["cameras"]], paths):
@@ -72,6 +78,12 @@ def run(config, output, stream=False, duration=None, throttle=0, steering=0, rec
             select_camera("/World/Overview")
         if record:
             recorder = CameraRecorder(config, paths, run_output)
+        world = World(stage, config, paths, controls, sliders)
+        commands = None
+        if control_port:
+            commands = CommandQueue()
+            server = start_server(commands, [c["name"] for c in config["cameras"]], control_port)
+            print(f"HarborControl: listening on http://127.0.0.1:{control_port}", flush=True)
         # Warm up assets, render products, and streaming before marking readiness.
         for _ in range(20):
             RenderingManager.render()
@@ -80,6 +92,28 @@ def run(config, output, stream=False, duration=None, throttle=0, steering=0, rec
         elapsed, step, frame, next_record = 0.0, 0, 0, 0.0
         stopped = False
         wall_start = time.monotonic()
+
+        def apply_commands():
+            for command_id, command in commands.drain():
+                try:
+                    world.apply(command, None if stopped else body, indices)
+                except CommandError as error:
+                    commands.complete(command_id, str(error))
+                    continue
+                except Exception as error:
+                    # A failed command must not stop a running simulation.
+                    traceback.print_exc()
+                    commands.complete(command_id, f"Internal error: {error}")
+                    continue
+                commands.complete(command_id)
+                # Replayable record of what changed during the run, in simulation time.
+                with (run_output / "commands.jsonl").open("a") as log:
+                    log.write(json.dumps({"time": elapsed, "id": command_id, **command}) + "\n")
+
+        def publish_state():
+            boat = None if stopped else (body.get_transforms()[0], body.get_velocities()[0])
+            commands.publish(world.snapshot(elapsed, timeline.is_playing(), boat))
+
         with (run_output / "trajectory.csv").open("w", newline="") as file:
             writer = csv.writer(file)
             writer.writerow(["time", "x", "y", "z", "qx", "qy", "qz", "qw", "vx", "vy", "vz", "wx", "wy", "wz", "throttle", "steering"])
@@ -87,9 +121,13 @@ def run(config, output, stream=False, duration=None, throttle=0, steering=0, rec
                 if stopped and timeline.is_playing():
                     sim_view, body = attach_boat(SimulationManager, RenderingManager, tensors, stage_utils.get_stage_id(stage))
                     stopped = False
+                stopped = stopped or timeline.is_stopped()
+                if commands:
+                    apply_commands()
                 if not timeline.is_playing():
-                    stopped = stopped or timeline.is_stopped()
                     RenderingManager.render()
+                    if commands:
+                        publish_state()
                     time.sleep(.01)
                     wall_start = time.monotonic() - elapsed
                     continue
@@ -107,6 +145,8 @@ def run(config, output, stream=False, duration=None, throttle=0, steering=0, rec
                 SimulationManager.step(update_fabric=SimulationManager.is_fabric_enabled())
                 if render:
                     RenderingManager.render()
+                    if commands:
+                        publish_state()
                     if step == 0:
                         ready.write_text("Harbor runtime ready\n")
                         print(f"HarborReady: first physics step completed; output={run_output}", flush=True)
@@ -132,6 +172,9 @@ def run(config, output, stream=False, duration=None, throttle=0, steering=0, rec
         raise
     finally:
         ready.unlink(missing_ok=True)
+        if server:
+            server.shutdown()
+            server.server_close()
         if recorder:
             recorder.close()
         if timeline:

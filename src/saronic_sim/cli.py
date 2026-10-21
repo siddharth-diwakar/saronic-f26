@@ -40,6 +40,7 @@ def parse_args() -> argparse.Namespace:
     harbor.add_argument("--throttle", type=finite_float, default=0)
     harbor.add_argument("--steering", type=finite_float, default=0)
     harbor.add_argument("--boat-usd", type=Path, help="Optional visual-only USD boat model")
+    harbor.add_argument("--control-port", type=int, help="Serve the runtime control API on this localhost port")
     args, kit_args = parser.parse_known_args()
     if any(not item.startswith("--/") for item in kit_args):
         parser.error("Unknown arguments: " + " ".join(kit_args))
@@ -48,6 +49,8 @@ def parse_args() -> argparse.Namespace:
             parser.error("throttle and steering must be between -1 and 1")
         if args.duration is not None and args.duration <= 0:
             parser.error("duration must be positive")
+        if args.control_port is not None and not 1024 <= args.control_port <= 65535:
+            parser.error("control port must be between 1024 and 65535")
         if args.boat_usd and not args.boat_usd.is_file():
             parser.error("boat USD file does not exist")
     # Only Kit settings should reach SimulationApp, not our scenario arguments.
@@ -126,4 +129,4 @@ if __name__ == "__main__":
         if args.heading is not None:
             config["boat"]["heading"] = args.heading
         duration = args.duration if args.duration is not None else (None if args.stream else config["simulation"]["duration"])
-        run(config, args.output, args.stream, duration, args.throttle, args.steering, args.record, args.boat_usd)
+        run(config, args.output, args.stream, duration, args.throttle, args.steering, args.record, args.boat_usd, args.control_port)

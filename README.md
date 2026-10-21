@@ -124,6 +124,36 @@ The original placement-only command remains available:
 ./scripts/run.sh deploy boat --x 10 --y 5 --heading 90
 ```
 
+## Runtime control API
+
+A running harbor accepts JSON commands to move the boat, adjust cameras, and
+change the environment without restarting. The streaming viewer serves it on
+port `8212` (`HARBOR_CONTROL_PORT`); finite runs enable it with
+`--control-port <port>`. It binds to **127.0.0.1 only** and has no
+authentication, so reach it from your machine through SSH, for example
+`ssh -L 8212:127.0.0.1:8212 <brev-instance>`. Do not open it publicly.
+
+```bash
+curl -s localhost:8212/commands -d '{"type": "set_controls", "throttle": 0.4, "steering": 0.1}'
+curl -s localhost:8212/commands -d '{"type": "set_camera", "name": "Forward", "target": [12, 3, 0.5], "focal_length": 24}'
+curl -s localhost:8212/commands/1   # queued, applied, or failed with an error
+curl -s localhost:8212/state        # time, boat pose/velocity, controls, cameras, environment
+```
+
+| `type` | Fields (all optional unless noted) |
+| --- | --- |
+| `set_controls` | `throttle`, `steering`: -1 to 1. Viewer sliders follow. |
+| `set_pose` | `position` `[x, y, z]`, `heading` degrees. Teleports, zeroes velocity; a heading also levels roll/pitch. |
+| `reset` | Returns the boat to its initial pose. |
+| `set_camera` | `name` (required: a scenario camera or `Overview`), `position`, `target`, `focal_length` (mm). Boat cameras use the boat frame, `Overview` the world frame. |
+| `set_environment` | `current` `[x, y, z]` m/s (affects drag), `sun_intensity`, `sky_intensity`, `sun_rotation` `[x, y, z]` degrees. |
+
+`POST /commands` validates immediately and returns `202` with an `id`, or `400`
+with an error. The simulation applies queued commands on its own thread before
+the next physics step. Movement fails while the timeline is stopped. Applied
+commands are appended with simulation time to the run's `commands.jsonl`.
+Camera resolution is fixed at startup because render products depend on it.
+
 ## Verification
 
 Without Isaac Sim, install NumPy in your Python environment and run:
