@@ -10,7 +10,9 @@ bootstrap() {
     echo "Brev's source checkout is missing at $repo_dir." >&2
     return 1
   fi
-  # Accept branch/tag names, including explicit refs to disambiguate names.
+  # Accept branch/tag names, including explicit refs to disambiguate names, and
+  # full 40-character commit SHAs (the backend always passes one). Abbreviated
+  # SHAs are not supported.
   case "$revision" in
     refs/heads/*|refs/tags/*) git check-ref-format "$revision" ;;
     refs/*|-*) echo "SARONIC_REF must be a branch or tag." >&2; return 1 ;;

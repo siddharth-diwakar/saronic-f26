@@ -2,12 +2,12 @@
 
 from alembic import context
 
-from saronic_api import models
+import saronic_api.sessions.models  # noqa: F401
 from saronic_api.config import Settings
-from saronic_api.database import build_engine, database_url
+from saronic_api.database import Base, build_engine, database_url
 
-# Importing models registers tables on the shared metadata.
-target_metadata = models.Base.metadata
+# Import model modules above so autogenerate sees their metadata.
+target_metadata = Base.metadata
 
 
 if context.is_offline_mode():

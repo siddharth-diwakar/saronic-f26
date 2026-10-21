@@ -55,6 +55,8 @@ output="$(SARONIC_REF=tanush/test-feature bash "$bootstrap_script" 2>&1)"
 [[ "$output" == *"STARTUP=feature REF=tanush/test-feature SHA=$feature_sha BOAT_X=12"* ]]
 output="$(SARONIC_REF=refs/tags/test-release bash "$bootstrap_script" 2>&1)"
 [[ "$output" == *"STARTUP=main REF=refs/tags/test-release SHA=$main_sha"* ]]
+output="$(SARONIC_REF="$feature_sha" bash "$bootstrap_script" 2>&1)"
+[[ "$output" == *"STARTUP=feature REF=$feature_sha SHA=$feature_sha"* ]]
 output="$(SARONIC_REF=no-startup bash "$bootstrap_script" 2>&1)"
 [[ "$output" == *'Repo startup script missing; using temporary starter fallback.'* ]]
 [[ "$output" == *'FALLBACK_RUN=deploy boat --x 12 --y 0 REF=no-startup'* ]]
@@ -71,4 +73,4 @@ if output="$(SARONIC_REF=main bash "$bootstrap_script" 2>&1)"; then
   echo 'Unexpected success for dirty checkout' >&2; exit 1
 fi
 [[ "$output" == *'Checkout has local changes'* ]]
-echo 'PASS: default main, feature branch, tag, env propagation, invalid refs, local-change protection, and missing-script fallback'
+echo 'PASS: default main, feature branch, tag, full SHA, env propagation, invalid refs, local-change protection, and missing-script fallback'

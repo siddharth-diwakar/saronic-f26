@@ -1,6 +1,7 @@
 # Saronic Isaac Sim harbor
 
-The CPU API skeleton and Coolify/PostgreSQL setup are in [backend/](backend/README.md).
+The CPU backend (session API that starts and stops Brev GPU instances on demand, its
+worker, and the Coolify/PostgreSQL setup) is in [backend/](backend/README.md).
 Deploy that directory independently of the GPU simulation environment below.
 
 A Docker environment for NVIDIA Brev with a procedural harbor, floating boat,
@@ -10,7 +11,8 @@ Sim **6.1.0**. The default scene needs no external model downloads.
 ## Run this feature on an existing Brev instance
 
 The [Brev Launchable](https://brev.nvidia.com/launchable/deploy?launchableID=env-3KBxE5OmaRkasfoXEDUhXeFleBL)
-accepts a **SARONIC_REF** string parameter, defaulting to `main`. Enter
+accepts a **SARONIC_REF** string parameter (a branch, tag or full 40-character
+commit SHA), defaulting to `main`. Enter
 `tanush/boat-harbor-simulation` to test this feature before it merges. After
 merging, the default `main` starts the harbor too.
 
