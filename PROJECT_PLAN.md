@@ -64,25 +64,50 @@ position. That is enough to build and test the loop end to end.
 
 ## What exists in the repo today
 
+Status as of `main` at `12a8e66` (through PR #10).
+
+**Simulation (GPU instance)**
+
 | Capability | Status | Where |
 | --- | --- | --- |
 | Isaac Sim 6.1.0 in Docker on a Brev GPU | Working | `Dockerfile`, `compose*.yaml`, `scripts/` |
-| Brev Launchable that starts any branch (`SARONIC_REF`) and logs the commit | Working | `scripts/brev-bootstrap.sh`, `scripts/brev-setup.sh` |
+| Brev Launchable that starts a branch, tag, or full commit SHA (`SARONIC_REF`) and logs the commit | Working | `scripts/brev-bootstrap.sh`, `scripts/brev-setup.sh` |
 | Procedural harbor: calm reflective water, dock, shore, buoys | Working | `src/saronic_sim/scene.py` |
 | One boat with its own buoyancy, drag, and differential thrust model | Working | `src/saronic_sim/hydrodynamics.py`, `runtime.py` |
 | Cameras configured in the boat frame (position, target, resolution, focal length) | Working | `scenarios/harbor.json`, `cameras.py` |
-| Headless finite run that records RGB + depth per camera and a trajectory CSV | Working (CLI, constant throttle/steering) | `scripts/run.sh harbor --record` |
+| Headless finite run that records RGB + depth per camera and a trajectory CSV | Working (constant throttle/steering at start) | `scripts/run.sh harbor --record` |
 | Browser viewer with throttle/steering sliders and camera switching | Working | `compose.stream.yaml` |
 | Optional visual-only boat USD model | Working | `--boat-usd` |
-| Gym-style Python API (place, step with a given pose, render) | **Not started** | — |
+| **Runtime control API** on a running sim: `set_controls`, `set_pose` (teleport, zeroes velocity), `reset`, `set_camera` (position, target, focal length), `set_environment` (current, sun, sky); `GET /state` returns time, boat pose/velocity, cameras, environment; applied commands logged to `commands.jsonl` | Working; localhost only, no auth, reached over SSH tunnel | `src/saronic_sim/commands.py`, `world.py`; `--control-port`, port `8212` in streaming mode |
+| Returning rendered camera images through an API call | **Not on main** (images only written to disk with `--record`) | — |
+| Lockstep stepping and Gym-style Python client with closed-loop example | **In progress, not merged** | branch `krish/gym-step` |
+| Camera resolution change at runtime | Not supported (fixed at startup) | `README.md` |
 | Multiple boats / many 3D models placed via API | **Not started** | — |
 | Waves | **Not started** (calm water only) | — |
-| Backend that starts and stops Brev GPUs on demand | **Not started** | team notes, P0 |
 
-Note the difference from the brief: today the repo computes boat motion from
-its own force model and throttle/steering. The brief's loop has **Saronic's
-boat model** supply the next position, and the environment places the boat
-there and renders. The API needs to support setting the pose directly.
+**Backend (CPU, `backend/`)**
+
+| Capability | Status | Where |
+| --- | --- | --- |
+| FastAPI API + separate worker process, one image, Postgres 18, Alembic migrations, Coolify deployment guide | Working | `backend/README.md`, `Dockerfile`, `migrations/` |
+| `POST /api/v1/sessions` (`ref` resolved to an exact commit SHA via `git ls-remote`), `GET /api/v1/sessions/{id}`, `POST /api/v1/sessions/{id}/stop` (idempotent) | Working | `sessions/router.py`, `refs.py` |
+| Shared `X-API-Key` auth; `MAX_ACTIVE_SESSIONS` cap (default 1) | Working | `auth.py`, `config.py` |
+| Session state machine `requested → provisioning → running → stopping → stopped` / `failed`; stop always **deletes** the Brev instance | Working | `sessions/transitions.py` |
+| Session timeline `requested → … → ready` with instance-reported steps via `POST …/events`, capped startup logs via `POST …/logs`, Slack alert on reported failure | Backend side working; **nothing on the instance reports yet** | `sessions/timeline.py` |
+| Brev CLI client (`create --launchable … --param`, `ls --json`, `stop`, `delete`) behind a `BrevClient` protocol, with a fake for tests | Working | `brev/client.py`, `tests/fakes.py` |
+| Duplicate-instance prevention: instance names derived from session IDs, so a restarted worker finds existing instances instead of creating new ones | Working | `worker.py` |
+| Brev spike script measuring real instance behaviour | Written, **not yet run** | `backend/scripts/brev_spike.py` |
+| Startup / idle / maximum-duration timeouts | **Not implemented** (noted in `worker.py`) | — |
+| Sweep for Brev instances with no matching session | **Not implemented** | — |
+| Saving recordings off the instance before deletion | **Not implemented** | — |
+| Instance-side stage reporting, ingest token, structured JSON logging | **In progress, not merged** | branch `krish/observability` |
+| Backend handing out the sim's control API address to clients | **Not implemented** (control API is localhost-only) | — |
+| GitHub Actions CI | **Not set up** (no `.github/`) | — |
+
+Gap against the brief: `set_pose` now lets an external model place the boat,
+but on `main` there is no call that advances time in lockstep and returns the
+camera images, which is the step/render loop the brief describes. That is what
+`krish/gym-step` is working toward.
 
 ## What P0 is
 
@@ -134,9 +159,11 @@ Mirroring the brief's description of Gym:
   Saronic's boat model).
 - **render**: return what each camera sees at the current time.
 
-The repo's runtime loop already separates pose updates, physics/render
-stepping, and camera capture (`runtime.py`, `cameras.py`), which is the
-starting point for these calls.
+Starting point on `main`: the runtime control API (`commands.py`, `world.py`)
+already queues commands from an HTTP thread and applies them on the
+simulation thread, and `set_pose` / `set_camera` / `GET /state` cover placement
+and state. Missing: advancing time on request and returning camera frames.
+In progress on `krish/gym-step`.
 
 ### 4. Headless runner and dummy boat integration
 
@@ -149,20 +176,21 @@ starting point for these calls.
 From the team's notes: a small always-on CPU backend manages on-demand Brev
 GPU instances, so Brev runs only during simulation sessions.
 
-| Item from team notes | Owner (from notes) |
-| --- | --- |
-| Hosting choice for the backend (Apex server, Krish V's Proxmox, AWS, GCP, Heroku) | Tanush |
-| Brev CLI: API-key login, deploy the existing Launchable by ID or create an instance and run the bootstrap script, branch selection with recorded commit | Swarit |
-| Backend language/library (Rust, Node/TypeScript, Python/FastAPI); Postgres for session state; separate provisioning/cleanup worker | Jit |
-| FastAPI scaffold, routes, Postgres models and schemas | Eddie |
-| `POST /sessions`, `GET /sessions/{id}`, `POST /sessions/{id}/stop` | Swarit |
-| Duplicate-instance prevention, startup/idle/max-duration timeouts, abandoned-instance detection after restart, verifying Brev actually terminated, saving recordings before deletion | Eddie |
-| Instantiation and detail features: movement, camera frame adjustment, camera look-at, environment | Krish |
-| Observability: structured logs tagged with session/instance/commit, session event timeline in Postgres, failure step + error + log tail, instance startup logs sent to backend | Krish |
-| Testing and CI: fake Brev client behind one interface, state/timeout unit tests, integration tests against Postgres, GitHub Actions with lint, type-check, tests, shellcheck | Tanush |
+| Item from team notes | Owner (from notes) | Status on `main` |
+| --- | --- | --- |
+| Hosting choice for the backend (Apex server, Krish V's Proxmox, AWS, GCP, Heroku) | Tanush | Coolify deployment documented in `backend/README.md` |
+| Brev CLI: API-key login, deploy the existing Launchable by ID or create an instance and run the bootstrap script, branch selection with recorded commit | Swarit | Done: `create --launchable` with params; refs resolved to SHAs. Spike not yet run |
+| Backend language/library (Rust, Node/TypeScript, Python/FastAPI); Postgres for session state; separate provisioning/cleanup worker | Jit | Decided: Python/FastAPI, Postgres 18, separate worker |
+| FastAPI scaffold, routes, Postgres models and schemas | Eddie | Done |
+| `POST /sessions`, `GET /sessions/{id}`, `POST /sessions/{id}/stop` | Swarit | Done (under `/api/v1`) |
+| Duplicate-instance prevention, startup/idle/max-duration timeouts, abandoned-instance detection after restart, verifying Brev actually terminated, saving recordings before deletion | Eddie | Duplicate prevention, restart recovery, and delete-until-gone done; timeouts, orphan sweep, recording save not yet |
+| Instantiation and detail features: movement, camera frame adjustment, camera look-at, environment | Krish | Done as the runtime control API |
+| Observability: structured logs tagged with session/instance/commit, session event timeline in Postgres, failure step + error + log tail, instance startup logs sent to backend | Krish | Timeline, logs, and failure routes done on the backend; instance-side reporting and JSON logging on `krish/observability` |
+| Testing and CI: fake Brev client behind one interface, state/timeout unit tests, integration tests against Postgres, GitHub Actions with lint, type-check, tests, shellcheck | Tanush | Fake client and tests done (Postgres tests opt-in via `TEST_DATABASE_URL`); no GitHub Actions yet |
 
 Later (per notes): world-editing and object-lookup endpoints, streaming data
-back to the client, Slack alerts.
+back to the client. Slack alerts are partly done (instance-reported failures
+only).
 
 ## Open questions
 
