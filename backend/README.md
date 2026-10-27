@@ -28,7 +28,7 @@ All routes require the `X-API-Key` header (see `SARONIC_API_KEY` below).
 | `GET /api/v1/sessions/{id}` | **200** with the session, its timeline and log excerpts, or **404**. |
 | `POST /api/v1/sessions/{id}/stop` | **202** with the session, or **404**. Idempotent. |
 | `POST /api/v1/sessions/{id}/events` | For the instance: report the next startup step (see [Timeline](#timeline)). **200**, **404**, **409** if it is not the next step or the session is no longer starting, **422** for an invalid step or failure. |
-| `POST /api/v1/sessions/{id}/logs` with `{"source": "bootstrap", "body": "..."}` | For the instance: store a capped startup log (`bootstrap`, `docker_build`, `isaac_launch` or `failure_tail`). **200** or **404**. |
+| `POST /api/v1/sessions/{id}/logs` with `{"source": "bootstrap", "body": "..."}` | For the instance: store a capped log (`bootstrap`, `docker_build`, `isaac_launch`, `failure_tail`, or `recording`). **200** or **404**. |
 
 The ref is resolved to a commit when the session is created. The instance always
 runs that exact commit (`SARONIC_REF=<sha>`), even if the branch moves later.
@@ -37,8 +37,11 @@ Session status goes `requested → provisioning → running → stopping → sto
 or ends in `failed` (with `error.code`). `running` means the Brev VM is up, **not**
 that the sim is ready. The response's `brev` object carries Brev's raw `status`,
 `build_status` and `health_status` from the worker's last poll. Stopping always
-**deletes** the Brev instance (`brev stop` would keep billing for the disk), and
-every failure path that may have created an instance also deletes it.
+**deletes** the Brev instance. `brev stop` is not used: a stopped VM still bills
+for the disk, and the session stays `stopping` until `brev ls` no longer lists
+it. Every failure path that may have created an instance also deletes it.
+Before that delete, the worker keeps a `recording` log: the body posted to
+`/logs`, or a note that nothing was uploaded.
 
 ### Timeline
 
@@ -115,6 +118,9 @@ Settings come from environment variables (and `.env` locally). Environment wins.
 | `BREV_COMMAND_TIMEOUT_S` | worker | `120` | Per brev CLI call |
 | `WORKER_POLL_INTERVAL_S` | worker | `10` | |
 | `WORKER_HEARTBEAT_PATH` | worker | `/tmp/saronic-worker-heartbeat` | Written after every tick and Brev call |
+| `SESSION_STARTUP_TIMEOUT_S` | worker | `2700` | Delete if the instance is not running in time (45 min) |
+| `SESSION_IDLE_TIMEOUT_S` | worker | `1200` | Delete a running session with no step or log for this long (20 min) |
+| `SESSION_MAX_DURATION_S` | worker | `7200` | Delete a session that has been running this long (2 h) |
 | `PROCESS_ROLE` | healthcheck | `api` | Set to `worker` on the worker app |
 | `SLACK_WEBHOOK_URL` | API | none | Optional. Slack incoming webhook for reported failures |
 
@@ -164,8 +170,12 @@ BREV_API_KEY=... uv run --frozen python -m saronic_api.worker
 
 It logs each create, status change and delete. Ctrl-C exits after the current
 step. Because instance names are derived from session IDs, a restarted worker
-picks up where it left off: it finds existing instances by name and never
-creates a second one for the same session.
+picks up where it left off: it finds an existing instance by name and does not
+create another one for that session. If a retried create still mints a second
+name, that extra instance is deleted. Each tick also deletes managed
+`saronic-<id>` instances that no active session owns, which is how a GPU left
+behind by a restart is cleaned up. Startup, idle, and maximum-duration limits
+above move the session to `stopping` and then delete the instance.
 
 To exercise the full flow without Brev, point `BREV_CLI_PATH` at a fake `brev`
 executable that answers `create <name> ... --detached`, `ls --json` and

@@ -11,8 +11,15 @@ from typing import Any, Protocol
 
 from saronic_api.brev import BrevInstance
 from saronic_api.sessions.status import SessionStatus
-from saronic_api.sessions.timeline import sync_timeline
-from saronic_api.sessions.transitions import NO_CHANGE, Action, SessionSnapshot, decide, stop_target
+from saronic_api.sessions.timeline import ensure_recording_saved, sync_timeline
+from saronic_api.sessions.transitions import (
+    NO_CHANGE,
+    Action,
+    SessionSnapshot,
+    Timeouts,
+    decide,
+    stop_target,
+)
 
 ERROR_MESSAGE_MAX = 2000
 
@@ -33,13 +40,17 @@ class SessionRecord(Protocol):
     failed_step: str | None
     provisioning_started_at: datetime | None
     running_at: datetime | None
+    last_activity_at: datetime | None
     stop_requested_at: datetime | None
     delete_requested_at: datetime | None
+    outputs_saved_at: datetime | None
     ended_at: datetime | None
     events: list[Any]  # SessionEvent rows, oldest first
+    log_excerpts: list[Any]
 
 
 def snapshot(record: SessionRecord) -> SessionSnapshot:
+    """Copy the fields `decide` needs off a session row."""
     return SessionSnapshot(
         status=SessionStatus(record.status),
         has_error=record.error_code is not None,
@@ -47,6 +58,9 @@ def snapshot(record: SessionRecord) -> SessionSnapshot:
         instance_seen=record.instance_id is not None,
         provisioning_started_at=record.provisioning_started_at,
         delete_requested_at=record.delete_requested_at,
+        running_at=record.running_at,
+        last_activity_at=record.last_activity_at,
+        outputs_saved_at=record.outputs_saved_at,
     )
 
 
@@ -70,7 +84,12 @@ def apply_stop(record: SessionRecord, now: datetime) -> bool:
     return True
 
 
-def apply_poll(record: SessionRecord, instance: BrevInstance | None, now: datetime) -> Action:
+def apply_poll(
+    record: SessionRecord,
+    instance: BrevInstance | None,
+    now: datetime,
+    timeouts: Timeouts | None = None,
+) -> Action:
     """Record this tick's Brev view of the instance, then apply decide()."""
     record.brev_checked_at = now
     if instance is None:
@@ -80,12 +99,15 @@ def apply_poll(record: SessionRecord, instance: BrevInstance | None, now: dateti
         record.brev_status = instance.status
         record.brev_build_status = instance.build_status
         record.brev_health_status = instance.health_status
-    action = decide(snapshot(record), instance, now)
+    action = decide(snapshot(record), instance, now, timeouts)
+    if action.save_outputs:
+        ensure_recording_saved(record, now)
     apply_action(record, action, now)
     return action
 
 
 def apply_action(record: SessionRecord, action: Action, now: datetime) -> None:
+    """Write a `decide` result onto the row and sync the timeline. `NO_CHANGE` does nothing."""
     if action == NO_CHANGE:
         return
     if action.error_code and record.error_code is None:
@@ -94,6 +116,7 @@ def apply_action(record: SessionRecord, action: Action, now: datetime) -> None:
         record.status = action.status.value
         if action.status == SessionStatus.RUNNING:
             record.running_at = now
+            record.last_activity_at = now
         elif action.status in (SessionStatus.STOPPED, SessionStatus.FAILED):
             record.ended_at = now
     if action.delete:
@@ -115,5 +138,6 @@ def apply_create_failure(record: SessionRecord, message: str, now: datetime) -> 
 
 
 def set_error(record: SessionRecord, code: str, message: str) -> None:
+    """Store the first error code and a message capped at 2000 characters."""
     record.error_code = code
     record.error_message = message[:ERROR_MESSAGE_MAX]

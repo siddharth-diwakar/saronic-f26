@@ -10,6 +10,7 @@ from saronic_api.sessions.transitions import (
     NO_CHANGE,
     Action,
     SessionSnapshot,
+    Timeouts,
     decide,
     stop_target,
 )
@@ -18,8 +19,27 @@ NOW = datetime(2026, 10, 15, 12, 0, tzinfo=UTC)
 LONG_AGO = NOW - timedelta(hours=1)
 
 
-def session(status, *, has_error=False, seen=True, started=LONG_AGO, delete_requested=None):
-    return SessionSnapshot(status, has_error, seen, started, delete_requested)
+def session(
+    status,
+    *,
+    has_error=False,
+    seen=True,
+    started=LONG_AGO,
+    delete_requested=None,
+    running_at=None,
+    last_activity_at=None,
+    outputs_saved=None,
+):
+    return SessionSnapshot(
+        status,
+        has_error,
+        seen,
+        started,
+        delete_requested,
+        running_at,
+        last_activity_at,
+        outputs_saved,
+    )
 
 
 def instance(status="RUNNING", build="COMPLETED", health="HEALTHY"):
@@ -98,14 +118,16 @@ def test_missing_instance_after_grace_fails_and_deletes_in_case_ls_omitted_it(cu
 
 @pytest.mark.parametrize("brev_status", ["RUNNING", "FAILURE", "STOPPED", "UNKNOWN"])
 def test_stopping_issues_first_delete(brev_status):
-    assert decide(session(S.STOPPING), instance(brev_status), NOW) == Action(delete=True)
+    assert decide(session(S.STOPPING), instance(brev_status), NOW) == Action(
+        delete=True, save_outputs=True
+    )
 
 
 def test_stopping_reissues_delete_at_most_every_60s():
     recent = session(S.STOPPING, delete_requested=NOW - DELETE_REISSUE_AFTER + timedelta(seconds=1))
     assert decide(recent, instance(), NOW) == NO_CHANGE
     stale = session(S.STOPPING, delete_requested=NOW - DELETE_REISSUE_AFTER)
-    assert decide(stale, instance(), NOW) == Action(delete=True)
+    assert decide(stale, instance(), NOW) == Action(delete=True, save_outputs=True)
 
 
 def test_stopping_never_deletes_while_brev_is_deleting():
@@ -115,7 +137,7 @@ def test_stopping_never_deletes_while_brev_is_deleting():
 def test_stopping_blind_delete_when_not_yet_listed():
     # e.g. create timed out but Brev created it anyway; deleting a missing one is a no-op.
     action = decide(session(S.STOPPING, seen=False, started=NOW), None, NOW)
-    assert action == Action(delete=True)
+    assert action == Action(delete=True, save_outputs=True)
 
 
 def test_stopping_never_seen_waits_out_grace_after_blind_delete():
@@ -148,3 +170,59 @@ def test_stopping_gone_with_error_ends_failed():
 @pytest.mark.parametrize("inst", [None, instance(), instance("FAILURE")])
 def test_requested_and_terminal_states_never_change(current, inst):
     assert decide(session(current), inst, NOW) == NO_CHANGE
+
+
+# --- timeouts and termination ---
+
+LIMITS = Timeouts(
+    startup=timedelta(minutes=45),
+    idle=timedelta(minutes=20),
+    max_duration=timedelta(hours=2),
+)
+
+
+def test_stopped_vm_still_bills_until_brev_delete():
+    """`brev stop` leaves the disk. The session ends only once ls no longer lists it."""
+    action = decide(session(S.STOPPING), instance("STOPPED"), NOW)
+    assert action.status is None
+    assert action.delete and action.save_outputs
+
+
+def test_saved_recording_is_not_requested_again():
+    snap = session(S.STOPPING, outputs_saved=NOW)
+    assert decide(snap, instance("STOPPED"), NOW) == Action(delete=True)
+
+
+def test_startup_timeout_deletes_a_vm_that_never_became_running():
+    started = NOW - LIMITS.startup
+    snap = session(S.PROVISIONING, started=started)
+    action = decide(snap, instance("DEPLOYING", "BUILDING"), NOW, LIMITS)
+    assert action.status == S.STOPPING
+    assert action.error_code == "startup_timeout"
+    assert action.delete and action.save_outputs
+
+
+def test_idle_timeout_deletes_a_quiet_running_session():
+    snap = session(
+        S.RUNNING,
+        running_at=NOW - timedelta(hours=1),
+        last_activity_at=NOW - LIMITS.idle,
+    )
+    action = decide(snap, instance(), NOW, LIMITS)
+    assert action.error_code == "idle_timeout"
+    assert action.delete
+
+
+def test_max_duration_wins_over_a_session_that_is_still_active():
+    snap = session(
+        S.RUNNING,
+        running_at=NOW - LIMITS.max_duration,
+        last_activity_at=NOW,
+    )
+    action = decide(snap, instance(), NOW, LIMITS)
+    assert action.error_code == "session_max_duration"
+
+
+def test_timeouts_are_ignored_unless_the_worker_passes_them():
+    snap = session(S.PROVISIONING, started=NOW - timedelta(hours=5))
+    assert decide(snap, instance("DEPLOYING"), NOW) == NO_CHANGE

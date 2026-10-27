@@ -14,6 +14,7 @@ import logging
 import urllib.error
 import urllib.request
 from datetime import datetime
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 from sqlalchemy import delete, func, select
@@ -98,6 +99,7 @@ def record_step(
 
 
 def has_step(record: "SessionRecord", step: SessionStep) -> bool:
+    """True when this session already has an event for `step`."""
     return any(event.step == step.value for event in record.events)
 
 
@@ -159,6 +161,7 @@ def apply_reported_step(
         record.error_code = code
         record.error_message = detail
         record.status = SessionStatus.STOPPING.value
+        record.last_activity_at = now
         sync_timeline(record, now)
         return True
 
@@ -175,6 +178,7 @@ def apply_reported_step(
             f"Cannot record {step.value}: the session is at {current.value}"
         )
     record_step(record, step, at)
+    record.last_activity_at = now
     return True
 
 
@@ -223,6 +227,46 @@ def record_log_excerpt(
     )
     db.execute(stmt)
     record.updated_at = now
+    record.last_activity_at = now
+    if source is LogSource.RECORDING:
+        record.outputs_saved_at = now
+
+
+def ensure_recording_saved(record: "SessionRecord", now: datetime) -> None:
+    """Keep a recording log before the instance is deleted.
+
+    An upload via POST /logs is left as-is. Otherwise a short note is stored so the
+    delete still has a record of what was (not) saved.
+    """
+    if record.outputs_saved_at is not None:
+        return
+    excerpts = record.log_excerpts
+    if not any(excerpt.source == LogSource.RECORDING.value for excerpt in excerpts):
+        body = (
+            f"No recording uploaded for {record.instance_name} before the instance was deleted.\n"
+        )
+        if isinstance(record, SimSession):
+            excerpts.append(
+                SessionLogExcerpt(
+                    session_id=record.id,
+                    source=LogSource.RECORDING.value,
+                    body=body,
+                    line_count=1,
+                    truncated=False,
+                    recorded_at=now,
+                )
+            )
+        else:
+            excerpts.append(
+                SimpleNamespace(
+                    source=LogSource.RECORDING.value,
+                    body=body,
+                    line_count=1,
+                    truncated=False,
+                    recorded_at=now,
+                )
+            )
+    record.outputs_saved_at = now
 
 
 def find_stuck_sessions(db: Session, *, older_than: datetime) -> list[SimSession]:
@@ -241,6 +285,7 @@ def find_stuck_sessions(db: Session, *, older_than: datetime) -> list[SimSession
 
 
 def failure_alert_text(record: SimSession) -> str:
+    """Slack text for a failed session. Log bodies are not included."""
     failed = record.failed_step or record.step
     instance = record.instance_id or record.instance_name
     detail = f" {record.error_message}" if record.error_message else ""
@@ -251,6 +296,7 @@ def failure_alert_text(record: SimSession) -> str:
 
 
 def stuck_alert_text(record: SimSession) -> str:
+    """Slack text for a session that has not advanced a step."""
     instance = record.instance_id or record.instance_name
     updated = record.updated_at.isoformat() if record.updated_at is not None else "unknown"
     return (
@@ -299,6 +345,7 @@ def deliver_stuck_alerts(db: Session, settings: Settings, *, older_than: datetim
 
 
 def post_slack(webhook_url: str, text: str) -> None:
+    """POST a Slack incoming-webhook payload. Raises if the webhook does not accept it."""
     request = urllib.request.Request(
         webhook_url,
         data=json.dumps({"text": text}).encode(),
