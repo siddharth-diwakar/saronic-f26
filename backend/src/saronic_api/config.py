@@ -34,6 +34,12 @@ class Settings(BaseSettings):
     max_active_sessions: int = Field(default=1, ge=1)
     worker_poll_interval_s: float = Field(default=10, gt=0)
     worker_heartbeat_path: str = "/tmp/saronic-worker-heartbeat"
+    # How long provisioning may last before the instance is deleted.
+    session_startup_timeout_s: float = Field(default=45 * 60, gt=0)
+    # How long a running session may go without a reported step or log.
+    session_idle_timeout_s: float = Field(default=20 * 60, gt=0)
+    # Cap on how long a session may stay running.
+    session_max_duration_s: float = Field(default=2 * 60 * 60, gt=0)
 
     # Optional Slack webhook for session failure alerts.
     slack_webhook_url: SecretStr | None = None

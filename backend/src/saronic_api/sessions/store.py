@@ -13,11 +13,13 @@ from sqlalchemy.orm import Session
 
 from saronic_api.sessions.models import SimSession
 from saronic_api.sessions.service import SessionRecord, apply_claim
-from saronic_api.sessions.status import MONITORED_STATUSES, SessionStatus
+from saronic_api.sessions.status import ACTIVE_STATUSES, MONITORED_STATUSES, SessionStatus
 
 
 @dataclass(frozen=True)
 class ClaimedSession:
+    """A session the worker has committed to `provisioning` and is about to create on Brev."""
+
     id: uuid.UUID
     instance_name: str
     commit_sha: str
@@ -30,11 +32,16 @@ class SessionStore(Protocol):
     def monitored_ids(self) -> list[uuid.UUID]:
         """Sessions the worker should poll Brev for."""
 
+    def owned_instance_names(self) -> set[str]:
+        """Instance names of sessions that may still hold a GPU."""
+
     def locked(self, session_id: uuid.UUID) -> AbstractContextManager[SessionRecord | None]:
         """Row-locked record; changes commit on normal exit and roll back on error."""
 
 
 class SqlSessionStore:
+    """Postgres-backed `SessionStore`. Each method commits its own short transaction."""
+
     def __init__(self, engine: Engine) -> None:
         self._engine = engine
 
@@ -64,6 +71,15 @@ class SqlSessionStore:
                     .order_by(SimSession.created_at)
                 )
             )
+
+    def owned_instance_names(self) -> set[str]:
+        with Session(self._engine) as db:
+            names = db.scalars(
+                select(SimSession.instance_name).where(
+                    SimSession.status.in_([s.value for s in ACTIVE_STATUSES])
+                )
+            )
+            return set(names)
 
     @contextmanager
     def locked(self, session_id: uuid.UUID) -> Iterator[SimSession | None]:
