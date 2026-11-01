@@ -3,18 +3,22 @@
 /events and /logs are for the instance to report startup progress and logs.
 """
 
+import logging
 import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime
 from functools import partial
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Request, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Path, Request, status
 from sqlalchemy import func, select
+from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, selectinload
 
 from saronic_api.auth import require_api_key
+from saronic_api.config import Settings
 from saronic_api.database import get_db
+from saronic_api.log import log_context
 from saronic_api.refs import RefError, RefResolutionError, ResolvedRef, resolve_ref
 from saronic_api.sessions.models import LogSource, SimSession, instance_name_for
 from saronic_api.sessions.schemas import (
@@ -33,6 +37,8 @@ from saronic_api.sessions.timeline import (
     record_log_excerpt,
     sync_timeline,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(
     prefix="/api/v1/sessions",
@@ -165,7 +171,11 @@ def stop_session(session_id: SessionId, db: Db) -> SessionResponse:
     },
 )
 def record_event(
-    session_id: SessionId, body: SessionEventCreate, request: Request, db: Db
+    session_id: SessionId,
+    body: SessionEventCreate,
+    request: Request,
+    background: BackgroundTasks,
+    db: Db,
 ) -> SessionResponse:
     """Record the next startup step reported by the instance.
 
@@ -197,9 +207,26 @@ def record_event(
     if body.log_tail is not None:
         record_log_excerpt(db, record, source=LogSource.FAILURE_TAIL, body=body.log_tail, now=now)
     db.commit()
+    with log_context(session_id=str(session_id), brev_instance_id=record.instance_id):
+        log = logger.error if body.step is SessionStep.FAILED else logger.info
+        log(
+            "Session step recorded",
+            extra={"step": body.step.value, "status": record.status, "changed": changed},
+        )
     if changed and body.step is SessionStep.FAILED:
-        deliver_failure_alert(db, request.app.state.settings, record)
+        # After the response: a slow webhook must not hold up the reporting instance.
+        background.add_task(
+            _send_failure_alert, request.app.state.engine, request.app.state.settings, session_id
+        )
     return SessionResponse.from_record(record)
+
+
+def _send_failure_alert(engine: Engine, settings: Settings, session_id: uuid.UUID) -> None:
+    # The request's session is closed by now; the alert claim needs its own transaction.
+    with Session(engine) as db:
+        record = db.get(SimSession, session_id)
+        if record is not None:
+            deliver_failure_alert(db, settings, record)
 
 
 @router.post("/{session_id}/logs", response_model=SessionResponse, responses=_NOT_FOUND)

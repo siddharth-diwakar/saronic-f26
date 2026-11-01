@@ -362,6 +362,22 @@ def test_reported_failure_stops_the_session_and_alerts_once(monkeypatch, db_engi
     assert "ISAAC_LAUNCH_FAILED" in posted[0] and "scene_loaded" in posted[0]
 
 
+def test_failure_alert_is_deferred_with_its_own_engine_and_only_on_change(
+    monkeypatch, api, db_engine
+):
+    alert = Mock()
+    monkeypatch.setattr("saronic_api.sessions.router._send_failure_alert", alert)
+    sid = running(api, db_engine)
+    failure = {"step": "failed", "failed_step": "container_built", "error_code": "BUILD"}
+    assert event(api, sid, **failure).status_code == 200
+    assert event(api, sid, **failure).status_code == 200  # repeat: no change, no alert
+    alert.assert_called_once()
+    engine, settings, session_id = alert.call_args.args
+    assert engine is api.app.state.engine
+    assert settings is api.app.state.settings
+    assert session_id == uuid.UUID(sid)
+
+
 def test_logs_are_capped_and_replaced_per_source(api):
     sid = create(api)["id"]
     url = f"/api/v1/sessions/{sid}/logs"

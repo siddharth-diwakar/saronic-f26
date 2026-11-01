@@ -69,7 +69,8 @@ last 200 lines or 64 KB per source; `log_tail` is stored as `failure_tail`. A re
 new session.
 
 Set `SLACK_WEBHOOK_URL` to post a Slack message when the instance reports a failure
-(once per session). Failures the worker detects are not posted yet, and
+(once per session). The alert is sent after the response, so a slow webhook never
+delays the reporting instance. Failures the worker detects are not posted yet, and
 `deliver_stuck_alerts` (sessions with no new step for a while) is not scheduled yet.
 
 Nothing on the instance calls `/events` or `/logs` yet; the bootstrap needs to send
