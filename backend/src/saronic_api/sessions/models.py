@@ -6,6 +6,7 @@ log excerpts and alerts hang off it and are deleted with it. A retry is a new se
 """
 
 import enum
+import re
 import uuid
 from collections.abc import Iterable
 from datetime import datetime
@@ -37,13 +38,18 @@ UQ_SESSION_ALERT = "uq_session_alerts_session_kind_step"
 
 
 class LogSource(enum.StrEnum):
+    """Where a capped log excerpt came from. One row per source per session."""
+
     BOOTSTRAP = "bootstrap"
     DOCKER_BUILD = "docker_build"
     ISAAC_LAUNCH = "isaac_launch"
     FAILURE_TAIL = "failure_tail"
+    RECORDING = "recording"
 
 
 class AlertKind(enum.StrEnum):
+    """Why a Slack alert was sent. Unique with the step so a retry does not post twice."""
+
     FAILED = "failed"
     STUCK = "stuck"
 
@@ -60,11 +66,27 @@ ALERT_KIND_SQL = f"kind IN ({_sql_list(AlertKind)})"
 
 
 def instance_name_for(session_id: uuid.UUID) -> str:
-    # Derived from the ID so a retried create for the same session hits "already exists".
+    """Brev name derived from the session id, so a retried create hits "already exists"."""
     return f"saronic-{session_id.hex[:12]}"
 
 
+# Our instances, plus a numeric suffix Brev appends when a retried create mints a second one.
+_MANAGED_INSTANCE = re.compile(r"^saronic-[0-9a-f]{12}(?:-\d+)?$")
+
+
+def is_managed_instance_name(name: str) -> bool:
+    """True for names this backend creates, including a numeric suffix from a duplicate create."""
+    return _MANAGED_INSTANCE.fullmatch(name) is not None
+
+
 class SimSession(Base):
+    """One on-demand Brev GPU session and the worker's current view of it.
+
+    ``status`` drives the worker. ``step`` is the latest timeline step. ``last_activity_at``
+    moves when the instance reports a step or a log, and is what the idle timeout reads.
+    ``outputs_saved_at`` is set once a recording log is stored, which is required before delete.
+    """
+
     __tablename__ = "sim_sessions"
     __table_args__ = (
         CheckConstraint(STATUS_SQL, name="ck_sim_sessions_status"),
@@ -100,7 +122,9 @@ class SimSession(Base):
     )
     provisioning_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     running_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_activity_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     stop_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    outputs_saved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     delete_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
@@ -116,7 +140,7 @@ class SimSession(Base):
 
 
 class SessionEvent(Base):
-    """Append-only; at most one event per step, written under the session's row lock."""
+    """One timeline step. Append-only, at most once per step, written under the session row lock."""
 
     __tablename__ = "session_events"
     __table_args__ = (
@@ -140,6 +164,11 @@ class SessionEvent(Base):
 
 
 class SessionLogExcerpt(Base):
+    """Capped log text for one source. A later post for the same source replaces the body.
+
+    ``recording`` is the excerpt kept before the Brev instance is deleted.
+    """
+
     __tablename__ = "session_log_excerpts"
     __table_args__ = (
         UniqueConstraint("session_id", "source", name=UQ_LOG_EXCERPT),

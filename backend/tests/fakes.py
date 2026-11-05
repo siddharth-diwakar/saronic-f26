@@ -39,6 +39,8 @@ class FakeBrev:
         self.ls_error: BrevError | None = None
         self.delete_error: BrevError | None = None
         self.delete_is_immediate = True  # else the instance shows DELETING until finish_deletes()
+        # create also starts "<name>-1" and returns that name: a retried create's second GPU.
+        self.mint_duplicate = False
 
     def create(self, *, name: str, launchable_id: str, params: dict[str, str]) -> str:
         self.calls.append(("create", name, launchable_id, dict(params)))
@@ -51,6 +53,10 @@ class FakeBrev:
                 self.set(name, "DEPLOYING", "PENDING")
             raise self.create_error
         self.set(name, "DEPLOYING", "PENDING")
+        if self.mint_duplicate:
+            extra = f"{name}-1"
+            self.set(extra, "DEPLOYING", "PENDING")
+            return extra
         return name
 
     def set(self, name, status="RUNNING", build="COMPLETED", health="HEALTHY") -> None:
@@ -105,11 +111,14 @@ class FakeRecord:
     failed_step: str | None = None
     provisioning_started_at: datetime | None = None
     running_at: datetime | None = None
+    last_activity_at: datetime | None = None
     stop_requested_at: datetime | None = None
     delete_requested_at: datetime | None = None
+    outputs_saved_at: datetime | None = None
     ended_at: datetime | None = None
     created_at: datetime = field(default_factory=lambda: START)
     events: list = field(default_factory=list)  # SessionEvent objects, oldest first
+    log_excerpts: list = field(default_factory=list)
 
     @property
     def steps(self) -> list[str]:
@@ -146,6 +155,10 @@ class InMemoryStore:
             for r in self.records.values()
             if r.status in {"provisioning", "running", "stopping"}
         ]
+
+    def owned_instance_names(self) -> set[str]:
+        active = {"requested", "provisioning", "running", "stopping"}
+        return {record.instance_name for record in self.records.values() if record.status in active}
 
     @contextmanager
     def locked(self, session_id: uuid.UUID):

@@ -3,6 +3,7 @@ import os
 import threading
 import time
 import uuid
+from datetime import timedelta
 from unittest.mock import Mock
 
 import pytest
@@ -13,20 +14,21 @@ from sqlalchemy.orm import Session
 from saronic_api import healthcheck, worker
 from saronic_api.brev import BrevError
 from saronic_api.config import Settings
-from saronic_api.sessions.models import SimSession, instance_name_for
+from saronic_api.sessions.models import SimSession, instance_name_for, is_managed_instance_name
 from saronic_api.sessions.service import apply_stop
 from saronic_api.sessions.store import SqlSessionStore
-from saronic_api.sessions.transitions import DELETE_REISSUE_AFTER, MISSING_GRACE
+from saronic_api.sessions.transitions import DELETE_REISSUE_AFTER, MISSING_GRACE, Timeouts
 from saronic_api.worker import Worker, run, write_heartbeat
 
 LAUNCHABLE = "env-test"
 
 
-def make(store=None, brev=None, clock=None):
+def make(store=None, brev=None, clock=None, timeouts=None):
     store = store or InMemoryStore()
     brev = brev or FakeBrev()
     clock = clock or FakeClock()
-    return Worker(store, brev, launchable_id=LAUNCHABLE, clock=clock), store, brev, clock
+    worker = Worker(store, brev, launchable_id=LAUNCHABLE, clock=clock, timeouts=timeouts)
+    return worker, store, brev, clock
 
 
 def stop(store, record, clock):
@@ -76,6 +78,9 @@ def test_full_lifecycle_requested_to_stopped():
         "teardown_requested",
         "stopped",
     ]
+    assert brev.calls_named("stop") == []
+    assert record.outputs_saved_at is not None
+    assert record.log_excerpts[0].source == "recording"
 
 
 def test_create_error_goes_to_stopping_then_deletes_then_failed():
@@ -314,7 +319,8 @@ def test_terminal_sessions_are_left_alone():
     store.add(status="stopped")
     store.add(status="failed")
     w.tick()
-    assert brev.calls == []
+    assert brev.calls == [("ls",)]
+    assert brev.calls_named("delete") == []
 
 
 def test_logs_carry_session_context(caplog):
@@ -352,8 +358,8 @@ def test_worker_beats_after_each_brev_call():
     beat = Mock()
     w = Worker(store, FakeBrev(), launchable_id=LAUNCHABLE, clock=FakeClock(), beat=beat)
     store.add()
-    w.tick()  # create + ls (+ delete none)
-    assert beat.call_count == 2
+    w.tick()  # ls before create, create, then the monitor ls
+    assert beat.call_count == 3
 
 
 def test_main_refuses_without_brev_key(monkeypatch):
@@ -449,6 +455,83 @@ def sql_stop(engine, session_id, clock):
         ).one()
         apply_stop(record, clock())
         db.commit()
+
+
+def test_existing_instance_is_not_created_again():
+    w, store, brev, _ = make()
+    record = store.add()
+    brev.set(record.instance_name, "DEPLOYING", "PENDING")
+    w.tick()
+    assert brev.calls_named("create") == []
+    assert record.status == "provisioning" and record.error_code is None
+    assert record.instance_name in brev.instances
+
+
+def test_suffixed_duplicate_from_create_is_deleted():
+    w, store, brev, _ = make()
+    record = store.add()
+    brev.mint_duplicate = True
+    w.tick()
+    extra = f"{record.instance_name}-1"
+    assert record.instance_name != extra
+    assert extra not in brev.instances
+    assert record.instance_name in brev.instances
+    assert ("delete", extra) in brev.calls
+
+
+def test_startup_idle_and_max_duration_delete_the_instance():
+    limits = Timeouts(
+        startup=timedelta(seconds=30),
+        idle=timedelta(seconds=60),
+        max_duration=timedelta(seconds=120),
+    )
+    w, store, brev, clock = make(timeouts=limits)
+    startup = store.add()
+    w.tick()
+    clock.advance(30)
+    w.tick()
+    assert startup.status == "stopping" and startup.error_code == "startup_timeout"
+    assert ("delete", startup.instance_name) in brev.calls
+
+    idle = store.add()
+    w.tick()
+    brev.set(idle.instance_name)
+    w.tick()
+    assert idle.status == "running"
+    clock.advance(60)
+    w.tick()
+    assert idle.error_code == "idle_timeout"
+
+    limited = store.add()
+    w.tick()
+    brev.set(limited.instance_name)
+    w.tick()
+    limited.last_activity_at = clock.now
+    clock.advance(120)
+    w.tick()
+    assert limited.error_code == "session_max_duration"
+    assert ("delete", limited.instance_name) in brev.calls
+
+
+def test_abandoned_instances_are_deleted_after_restart():
+    w, store, brev, _ = make()
+    leftover = store.add(status="stopped")
+    brev.set(leftover.instance_name, "STOPPED")
+    brev.set("saronic-abcdef123456", "RUNNING")
+    brev.set("saronic-abcdef123456-1", "RUNNING")
+    brev.set("saronic-spike-keep", "RUNNING")
+    owned = store.add()  # requested; its name must survive the sweep
+    brev.set(owned.instance_name, "RUNNING")
+
+    w.tick()
+    deleted = {call[1] for call in brev.calls_named("delete")}
+    assert leftover.instance_name in deleted
+    assert "saronic-abcdef123456" in deleted
+    assert "saronic-abcdef123456-1" in deleted
+    assert "saronic-spike-keep" not in deleted
+    assert owned.instance_name not in deleted
+    assert is_managed_instance_name(owned.instance_name)
+    assert not is_managed_instance_name("saronic-spike-keep")
 
 
 def test_sql_lifecycle_and_create_error(db_engine):
