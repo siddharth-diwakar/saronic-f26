@@ -335,16 +335,14 @@ and Dockerfile. It has no HTTP server and no domain.
    destination as the API.
 2. Build pack **Dockerfile**, Base Directory `/backend`, Dockerfile Location
    `/Dockerfile`. Leave **Ports Exposes** empty or unused and add **no domain**.
-3. Override the container's start command (the image's default `CMD` starts
-   the API) with:
+3. Set **Docker build stage target** to `worker`. This target starts the
+   background worker and sets `PROCESS_ROLE=worker`. The default build target
+   still starts the API. On platforms with a command override, the equivalent
+   start command is:
 
    ```bash
    python -m saronic_api.worker
    ```
-
-   Confirm in your Coolify version where a Dockerfile application's start
-   command is overridden. If it can't be, ask before changing the shared
-   Dockerfile's `CMD`.
 
 4. Runtime environment variables: the same `DATABASE_URL`, `APP_ENV` and
    `LOG_LEVEL` as the API, plus:
