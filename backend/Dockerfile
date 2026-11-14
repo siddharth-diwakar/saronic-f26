@@ -1,4 +1,4 @@
-FROM python:3.12-slim
+FROM python:3.12-slim AS runtime
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -48,3 +48,11 @@ HEALTHCHECK --interval=30s --timeout=20s --start-period=30s --retries=3 \
     CMD ["python", "-m", "saronic_api.healthcheck"]
 # The worker app overrides this with `python -m saronic_api.worker`.
 CMD ["uvicorn", "saronic_api.main:app", "--host", "0.0.0.0", "--port", "8000", "--no-server-header"]
+
+# Select this target for platforms that cannot override a Dockerfile's CMD.
+FROM runtime AS worker
+ENV PROCESS_ROLE=worker
+CMD ["python", "-m", "saronic_api.worker"]
+
+# Keep the API as the default target for existing deployments.
+FROM runtime AS api

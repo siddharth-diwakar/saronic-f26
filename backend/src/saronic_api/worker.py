@@ -50,6 +50,7 @@ class Worker:
         brev: BrevClient,
         *,
         launchable_id: str,
+        instance_prefix: str = "saronic",
         clock: Callable[[], datetime] = utcnow,
         beat: Callable[[], None] = lambda: None,
         timeouts: Timeouts | None = None,
@@ -57,6 +58,7 @@ class Worker:
         self._store = store
         self._brev = brev
         self._launchable_id = launchable_id
+        self._instance_prefix = instance_prefix
         self._clock = clock
         self._timeouts = timeouts or Timeouts()
         # Called after each Brev call so a slow CLI call doesn't look like a hung worker.
@@ -203,7 +205,7 @@ class Worker:
         """Delete managed instances no active session owns, including ones left after a restart."""
         owned = self._store.owned_instance_names()
         for name in instances:
-            if not is_managed_instance_name(name) or name in owned:
+            if not is_managed_instance_name(name, self._instance_prefix) or name in owned:
                 continue
             logger.warning("Deleting abandoned Brev instance %s", name)
             try:
@@ -283,6 +285,7 @@ def main() -> int:
             SqlSessionStore(engine),
             brev,
             launchable_id=settings.brev_launchable_id,
+            instance_prefix=settings.instance_prefix,
             beat=beat,
             timeouts=Timeouts(
                 startup=timedelta(seconds=settings.session_startup_timeout_s),
