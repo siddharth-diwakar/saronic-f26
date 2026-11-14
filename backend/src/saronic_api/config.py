@@ -31,6 +31,13 @@ class Settings(BaseSettings):
 
     repo_url: str = Field(default=DEFAULT_REPO_URL, validation_alias="SARONIC_REPO_URL")
     default_ref: str = Field(default="main", validation_alias="SARONIC_DEFAULT_REF")
+    instance_prefix: str = Field(
+        default="saronic",
+        validation_alias="SARONIC_INSTANCE_PREFIX",
+        min_length=1,
+        max_length=40,
+        pattern=r"^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$",
+    )
     max_active_sessions: int = Field(default=1, ge=1)
     worker_poll_interval_s: float = Field(default=10, gt=0)
     worker_heartbeat_path: str = "/tmp/saronic-worker-heartbeat"

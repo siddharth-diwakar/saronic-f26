@@ -112,7 +112,7 @@ def create_session(
         step=SessionStep.REQUESTED.value,
         ref=resolved.ref,
         commit_sha=resolved.commit_sha,
-        instance_name=instance_name_for(session_id),
+        instance_name=instance_name_for(session_id, settings.instance_prefix),
     )
     sync_timeline(record, datetime.now(UTC))
     db.add(record)

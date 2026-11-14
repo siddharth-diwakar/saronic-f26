@@ -42,6 +42,16 @@ def test_missing_database_configuration_fails(monkeypatch):
         Settings(_env_file=None)
 
 
+@pytest.mark.parametrize("prefix", ["", "UPPER", "has space", "bad.*", "x" * 41])
+def test_unsafe_instance_prefix_is_rejected(prefix):
+    with pytest.raises(ValidationError):
+        Settings(
+            _env_file=None,
+            database_url="postgresql://team:secret@database:5432/saronic",
+            SARONIC_INSTANCE_PREFIX=prefix,
+        )
+
+
 def test_lifecycle_checks_database_and_releases_pool_and_exposes_session_routes(monkeypatch):
     engine = Mock()
     check = Mock()

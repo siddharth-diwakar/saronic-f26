@@ -534,6 +534,31 @@ def test_abandoned_instances_are_deleted_after_restart():
     assert not is_managed_instance_name("saronic-spike-keep")
 
 
+def test_cleanup_only_deletes_instances_in_this_deployments_prefix():
+    store = InMemoryStore()
+    brev = FakeBrev()
+    owned = store.add()
+    owned.instance_name = instance_name_for(owned.id, "saronic-prod")
+    brev.set(owned.instance_name, "RUNNING")
+    for name in (
+        "saronic-abcdef123456",
+        "saronic-staging-abcdef123456",
+        "saronic-prod-abcdef123456",
+        "saronic-prod-abcdef123456-1",
+    ):
+        brev.set(name, "RUNNING")
+    w = Worker(store, brev, launchable_id=LAUNCHABLE, instance_prefix="saronic-prod")
+
+    w.tick()
+
+    assert {call[1] for call in brev.calls_named("delete")} == {
+        "saronic-prod-abcdef123456",
+        "saronic-prod-abcdef123456-1",
+    }
+    assert not is_managed_instance_name(owned.instance_name)
+    assert is_managed_instance_name(owned.instance_name, "saronic-prod")
+
+
 def test_sql_lifecycle_and_create_error(db_engine):
     clock = FakeClock()
     w, _, brev, _ = make(SqlSessionStore(db_engine), clock=clock)

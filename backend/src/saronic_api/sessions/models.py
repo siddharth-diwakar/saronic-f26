@@ -65,18 +65,15 @@ LOG_SOURCE_SQL = f"source IN ({_sql_list(LogSource)})"
 ALERT_KIND_SQL = f"kind IN ({_sql_list(AlertKind)})"
 
 
-def instance_name_for(session_id: uuid.UUID) -> str:
+def instance_name_for(session_id: uuid.UUID, prefix: str = "saronic") -> str:
     """Brev name derived from the session id, so a retried create hits "already exists"."""
-    return f"saronic-{session_id.hex[:12]}"
+    return f"{prefix}-{session_id.hex[:12]}"
 
 
 # Our instances, plus a numeric suffix Brev appends when a retried create mints a second one.
-_MANAGED_INSTANCE = re.compile(r"^saronic-[0-9a-f]{12}(?:-\d+)?$")
-
-
-def is_managed_instance_name(name: str) -> bool:
+def is_managed_instance_name(name: str, prefix: str = "saronic") -> bool:
     """True for names this backend creates, including a numeric suffix from a duplicate create."""
-    return _MANAGED_INSTANCE.fullmatch(name) is not None
+    return re.fullmatch(rf"{re.escape(prefix)}-[0-9a-f]{{12}}(?:-\d+)?", name) is not None
 
 
 class SimSession(Base):

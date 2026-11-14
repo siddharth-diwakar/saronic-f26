@@ -111,6 +111,7 @@ Settings come from environment variables (and `.env` locally). Environment wins.
 | `SARONIC_API_KEY` | API | none | Shared key for `X-API-Key`. **The API refuses to start in production without it.** Unset in development means no auth. |
 | `SARONIC_REPO_URL` | API | `https://github.com/siddharth-diwakar/saronic-f26` | Where refs are resolved |
 | `SARONIC_DEFAULT_REF` | API | `main` | Ref used when the POST body has none |
+| `SARONIC_INSTANCE_PREFIX` | both | `saronic` | Unique per database/deployment, e.g. `saronic-prod`. API and worker must match. Orphan cleanup only deletes names within this prefix. |
 | `MAX_ACTIVE_SESSIONS` | API | `1` | Cap on `requested`/`provisioning`/`running`/`stopping` sessions, to bound GPU spend |
 | `BREV_API_KEY` | worker | none | **Secret.** The worker refuses to start without it. The API doesn't need it. |
 | `BREV_LAUNCHABLE_ID` | worker | `env-3KBxE5OmaRkasfoXEDUhXeFleBL` | The repo's L40S Launchable |
@@ -367,6 +368,10 @@ session IDs, so it finds existing instances by name, and a retried create hits
 
 For separate staging/preview apps, create a separate database and runtime
 configuration; do not reuse production credentials/data by default.
+When environments share a Brev organization, set a distinct
+`SARONIC_INSTANCE_PREFIX` on both their API and worker before creating sessions.
+The default legacy prefix is not safe to share across independent databases:
+each worker otherwise considers the other environment's instances abandoned.
 
 See [Coolify Dockerfile deployments](https://coolify.io/docs/applications/builds/dockerfile).
 
