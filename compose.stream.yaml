@@ -1,6 +1,9 @@
 services:
   sim:
     working_dir: /workspace
+    environment:
+      # Session-token auth for the control bridge; the backend worker writes this file.
+      SARONIC_BRIDGE_SESSION_FILE: /workspace/output/.bridge-session.json
     entrypoint: ["/isaac-sim/python.sh", "/workspace/src/saronic_sim/cli.py"]
     command:
       - "harbor"

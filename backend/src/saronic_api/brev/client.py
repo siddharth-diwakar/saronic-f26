@@ -137,6 +137,14 @@ class CliBrevClient:
             return
         raise self._failure("delete", result)
 
+    def refresh_ssh_config(self) -> None:
+        """`brev refresh`: write ~/.brev/ssh_config (an `<name>` and `<name>-host` entry per
+        running instance), include it from ~/.ssh/config, and store the SSH key. The bridge
+        tunnels run plain `ssh` against those entries."""
+        result = self._run(["refresh"])
+        if result.returncode != 0:
+            raise self._failure("refresh", result)
+
     def _run(self, args: list[str]) -> subprocess.CompletedProcess[str]:
         # The key travels only in env; argv is safe to log.
         argv = [self._cli_path, *args]

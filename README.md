@@ -131,9 +131,24 @@ The original placement-only command remains available:
 A running harbor accepts JSON commands to move the boat, adjust cameras, and
 change the environment without restarting. The streaming viewer serves it on
 port `8212` (`HARBOR_CONTROL_PORT`); finite runs enable it with
-`--control-port <port>`. It binds to **127.0.0.1 only** and has no
-authentication, so reach it from your machine through SSH, for example
-`ssh -L 8212:127.0.0.1:8212 <brev-instance>`. Do not open it publicly.
+`--control-port <port>`. It binds to **127.0.0.1 only**, so reach it from your
+machine through SSH, for example `ssh -L 8212:127.0.0.1:8212 <brev-instance>-host`.
+Do not open it publicly.
+
+**Sessions started by the backend are authenticated.** The backend's worker
+writes `output/.bridge-session.json` (the session ID and a SHA-256 of a
+per-session token) over SSH before it opens its own tunnel. From then on every
+request needs `Authorization: Bearer <token>`; the token is held by the
+backend, not the instance. Until that file first appears (an instance started by
+hand from the Launchable) the bridge stays open to localhost as before. Once
+seen, it never reopens: a deleted or malformed file refuses all requests with
+`503`. See [backend/README.md](backend/README.md#simulator-bridge).
+
+Every response carries `X-Saronic-Runtime-Id`, random per simulator process.
+Command IDs restart at 1 when the simulator restarts, so a client that sends
+the runtime ID it expects gets `409 runtime_changed` instead of another
+runtime's result. `GET /health` returns `runtime_id`, `session_id` and
+`ready` (the simulation loop has started applying commands).
 
 ```bash
 curl -s localhost:8212/commands -d '{"type": "set_controls", "throttle": 0.4, "steering": 0.1}'
@@ -195,7 +210,8 @@ see [camera sensors](https://docs.isaacsim.omniverse.nvidia.com/6.1.0/sensors/is
 
 ## Repo layout
 
-- `src/saronic_sim/`: CLI, scenario validation, scene authoring, force model, runtime, cameras.
+- `src/saronic_sim/`: CLI, scenario validation, scene authoring, force model, runtime, cameras,
+  control bridge (`commands.py`) and its session auth and runtime identity (`access.py`).
 - `scenarios/`: versioned experiment settings.
 - `scripts/`: branch-selection bootstrap, repository startup, host checks, volume permissions, and GPU smoke check.
 - `compose*.yaml`, `Dockerfile`, `streaming/`: Docker and existing WebRTC viewer.

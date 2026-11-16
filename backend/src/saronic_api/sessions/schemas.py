@@ -90,6 +90,21 @@ class BrevState(BaseModel):
     checked_at: datetime | None
 
 
+class BridgeState(BaseModel):
+    """The simulator's control bridge, as the worker last saw it through its SSH tunnel.
+
+    `ready` separates a running VM from a simulator that can take commands. `runtime_id`
+    changes when the simulator restarts; commands sent to an earlier runtime have unknown
+    outcomes. The token and tunnel address are never returned.
+    """
+
+    ready: bool
+    runtime_id: str | None
+    connected_at: datetime | None = Field(description="When this runtime was first verified.")
+    checked_at: datetime | None
+    error: str | None
+
+
 class SessionError(BaseModel):
     """Set when the session has failed. `failed_step` is the pipeline step that did not finish."""
 
@@ -108,6 +123,7 @@ class SessionResponse(BaseModel):
     ref: str
     commit_sha: str
     brev: BrevState
+    bridge: BridgeState
     error: SessionError | None
     created_at: datetime
     updated_at: datetime
@@ -136,6 +152,14 @@ class SessionResponse(BaseModel):
                 build_status=record.brev_build_status,
                 health_status=record.brev_health_status,
                 checked_at=record.brev_checked_at,
+            ),
+            bridge=BridgeState(
+                # Only a running session's bridge can take commands.
+                ready=bool(record.bridge_ready) and record.status == SessionStatus.RUNNING,
+                runtime_id=record.bridge_runtime_id,
+                connected_at=record.bridge_connected_at,
+                checked_at=record.bridge_checked_at,
+                error=record.bridge_error,
             ),
             error=(
                 SessionError(

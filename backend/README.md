@@ -6,6 +6,9 @@ stops on-demand Brev GPU instances for simulation sessions:
 ```text
 client ──HTTPS──> API (FastAPI) ──Postgres── worker ──brev CLI──> Brev GPU instance
                   /api/v1/sessions                    (Launchable → bootstrap → Isaac Sim)
+                     │                                  │
+                     └──HTTP + session token──> worker:18200 ══ssh -L══> 127.0.0.1:8212
+                                                                         simulator bridge
 ```
 
 Two processes share one image and one database:
@@ -13,7 +16,9 @@ Two processes share one image and one database:
 - **API** (`uvicorn saronic_api.main:app`): session endpoints. It never calls
   Brev and needs no Brev credentials.
 - **Worker** (`python -m saronic_api.worker`): the only process that calls Brev.
-  It creates, polls and deletes instances in the background.
+  It creates, polls and deletes instances in the background, and holds an SSH
+  tunnel to each running instance's simulator bridge (see
+  [Simulator bridge](#simulator-bridge)).
 
 FastAPI's built-in `/docs`, `/redoc`, and `/openapi.json` are available; `/`
 returns 404.
@@ -75,6 +80,79 @@ Set `SLACK_WEBHOOK_URL` to post a Slack message when the instance reports a fail
 Nothing on the instance calls `/events` or `/logs` yet; the bootstrap needs to send
 them. They use the same `X-API-Key` as other routes.
 
+### Simulator bridge
+
+`running` means the VM is up. Commands reach the live Isaac Sim scene through the
+**control bridge**: a small HTTP server inside the long-running simulator process
+(`src/saronic_sim/commands.py`), started automatically with the sim container
+(`--control-port 8212` in `compose.stream.yaml`) and bound to the instance's
+127.0.0.1. The worker connects to it; the API forwards through that connection.
+
+For each `running` session, every worker tick:
+
+1. **Session file.** `brev refresh` writes Brev's SSH config and key into the
+   worker's home. The worker then writes `{"session_id", "token_sha256"}` to
+   `BRIDGE_REMOTE_SESSION_FILE` on the instance over SSH (by rename, so the bridge never
+   reads half a file). That path is the sim container's
+   `/workspace/output/.bridge-session.json`. From then on the bridge requires
+   `Authorization: Bearer <token>`. Each session gets its own random `bridge_token`
+   at creation; only its hash reaches the instance and it is never returned by the API.
+2. **Tunnel.** The worker runs and supervises
+   `ssh -N -L <bind>:<port>:127.0.0.1:8212 <instance>-host`, one per session, from
+   ports `BRIDGE_TUNNEL_PORT_START`.. upward. `<instance>-host` is Brev's alias for the
+   VM itself (`brev shell --host`); the sim container uses host networking, so the
+   VM's 127.0.0.1 is the simulator's. The plain `<instance>` alias can land in a Brev
+   workspace container instead. The session file is always written before the
+   tunnel exists. `brev port-forward` is not used: it backgrounds ssh and exits, so
+   nothing could supervise or restart it.
+3. **Verify.** `GET /health` through the tunnel must return this session's ID. That
+   proves the tunnel reached this session's simulator. The reply also carries the
+   simulator's `runtime_id` (random per process) and `ready` (the simulation loop is
+   applying commands).
+4. **Register.** The result goes on the session row: `bridge_host`/`bridge_port` (where
+   the API reaches the tunnel), `bridge_runtime_id`, `bridge_ready`, `bridge_error`,
+   `bridge_connected_at` (when this runtime was first verified) and
+   `bridge_checked_at`. The worker never moves `last_activity_at`.
+
+Recovery: a tunnel whose ssh exits is reported down at once and restarted with
+backoff (5 s doubling to 60 s), running `brev refresh` again after failures (at most
+once a minute) in case the IP or SSH certificate changed. A bridge that lost or
+rejects the session file gets it again. A tunnel that reaches another session's
+simulator is dropped. A restarted simulator shows up as a new `runtime_id`. When a
+session leaves `running`, its tunnel closes and `bridge_ready` becomes false; the
+last runtime ID is kept. Tunnels die with the worker and are rebuilt by the next
+one.
+
+`GET /api/v1/sessions/{id}` returns this as `bridge`:
+
+```json
+"bridge": {"ready": true, "runtime_id": "4f0c…", "connected_at": "…", "checked_at": "…", "error": null}
+```
+
+`error` explains a non-ready bridge, for example `Simulator is loading`,
+`Simulator bridge not answering: …` (the sim is starting or restarting),
+`SSH tunnel exited: …`, `Could not write the session file on …: … does not exist yet`
+(instance setup still running), or `brev refresh failed: …`.
+
+**Forwarding from API code** (`saronic_api.bridge`):
+
+```python
+from saronic_api.bridge import BridgeError, BridgeRuntimeChanged, bridge_connection
+
+connection = bridge_connection(record)  # BridgeUnavailable unless running and ready
+client = connection.client(timeout_s=5)  # sends the token and the expected runtime ID
+response = client.request("POST", "/commands", {"type": "set_pose", "position": [5, 0, 0.25]})
+# response.status / response.body: 202 {"id": 7, "status": "queued"}, or the bridge's 400
+```
+
+`BridgeUnavailable` (`.code`: `session_not_running`, `bridge_not_connected`,
+`bridge_not_ready`, `bridge_unreachable`, `bridge_unauthorized`,
+`bridge_session_unavailable`) means "not now". `BridgeRuntimeChanged` means the
+simulator restarted since the worker verified it. Its command IDs restarted at 1, so
+earlier commands' outcomes are **unknown**; report them as such rather than replaying
+them. Requests to the bridge are not session activity, so the forwarding route should
+move `last_activity_at` itself.
+
 ## Layout
 
 ```text
@@ -92,6 +170,8 @@ backend/
     auth.py                  X-API-Key dependency
     refs.py                  Branch/tag/SHA → commit resolution (git ls-remote)
     brev/client.py           BrevClient protocol and CLI implementation
+    bridge/                  Simulator bridge: worker SSH tunnels (tunnel.py), HTTP client with
+                             token/runtime checks (client.py), the API's view (connection.py)
     sessions/                Models, endpoints, state machine (transitions.py), worker store,
                              timeline steps, log excerpts and Slack alerts (timeline.py)
     worker.py                Background worker entry point
@@ -124,6 +204,15 @@ Settings come from environment variables (and `.env` locally). Environment wins.
 | `SESSION_MAX_DURATION_S` | worker | `7200` | Delete a session that has been running this long (2 h) |
 | `PROCESS_ROLE` | healthcheck | `api` | Set to `worker` on the worker app |
 | `SLACK_WEBHOOK_URL` | API | none | Optional. Slack incoming webhook for reported failures |
+| `BRIDGE_TUNNELS_ENABLED` | worker | `true` | Keep SSH tunnels to running sessions' simulator bridges |
+| `BRIDGE_TUNNEL_BIND_HOST` | worker | `0.0.0.0` | Interface the forwarded ports listen on. Use `127.0.0.1` when the API and worker share a host |
+| `BRIDGE_TUNNEL_ADVERTISE_HOST` | worker | auto | Address the API uses to reach those ports. Default: the worker container's IP (its hostname's address), or `127.0.0.1` for a loopback bind |
+| `BRIDGE_TUNNEL_PORT_START` | worker | `18200` | First of 64 forwarded ports |
+| `BRIDGE_REMOTE_PORT` | worker | `8212` | Bridge port on the instance (`HARBOR_CONTROL_PORT`) |
+| `BRIDGE_REMOTE_SESSION_FILE` | worker | `saronic-f26/output/.bridge-session.json` | Session file path on the instance, relative to the SSH user's home |
+| `BRIDGE_SSH_HOST_SUFFIX` | worker | `-host` | Brev SSH alias suffix for the VM host |
+| `BRIDGE_SSH_PATH` | worker | `ssh` | |
+| `BRIDGE_REQUEST_TIMEOUT_S` | worker | `5` | Health-check timeout through the tunnel |
 
 The Brev key is passed to the CLI only through the child process's environment,
 never in argv, and is redacted from error messages.
@@ -327,6 +416,10 @@ Revision `e9155e165f02` drops the earlier `sessions` table and deletes any rows 
 `session_events`, `session_log_excerpts` and `session_alerts`: they belonged to
 `sessions` rows, which cannot be mapped to `sim_sessions`.
 
+Revision `185799806ea6` adds the bridge registration columns and gives every existing
+session a bridge token. Run it before deploying the worker that keeps tunnels;
+an older API keeps working against the new columns.
+
 ## Coolify: worker application
 
 The worker is a **second Coolify application** built from the same repository
@@ -360,6 +453,14 @@ and Dockerfile. It has no HTTP server and no domain.
    command timeout (150 s by default), plus the DB. Without `PROCESS_ROLE=worker`
    the check would probe port 8000 and mark the worker unhealthy.
 6. Run **exactly one** worker replica. Deploy it after the migrations above.
+7. **Bridge tunnels.** The API connects to the worker's forwarded ports
+   (`18200`-`18263`) over the Docker network, so the API and worker must share a
+   destination network; publish no host ports and add no domain for them. By default
+   the worker advertises its own container IP, which changes on each redeploy (the
+   worker then rebuilds its tunnels and re-registers). If the worker is attached to
+   more than one network, set `BRIDGE_TUNNEL_ADVERTISE_HOST` to an address the API
+   can reach. Anything else on that network can reach these ports too; the bridge
+   rejects requests without the session's token.
 
 On redeploy the worker receives SIGTERM and exits after its current step. If it is
 killed mid-step, the next worker recovers: instance names are derived from

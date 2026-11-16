@@ -6,8 +6,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     UV_LINK_MODE=copy
 
 # git: the API resolves session refs with `git ls-remote`.
+# openssh-client: the worker's SSH tunnels to each instance's simulator bridge.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends git ca-certificates \
+    && apt-get install -y --no-install-recommends git ca-certificates openssh-client \
     && rm -rf /var/lib/apt/lists/*
 
 # Pinned brev CLI for the worker. 0.6.336 is tagged but has no release archives, so

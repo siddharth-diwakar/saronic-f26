@@ -1,6 +1,7 @@
 """Run the harbor in one Isaac Sim process, including its browser viewport."""
 import csv
 import json
+import os
 import time
 import traceback
 from pathlib import Path
@@ -82,8 +83,15 @@ def run(config, output, stream=False, duration=None, throttle=0, steering=0, rec
         commands = None
         if control_port:
             commands = CommandQueue()
-            server = start_server(commands, [c["name"] for c in config["cameras"]], control_port)
-            print(f"HarborControl: listening on http://127.0.0.1:{control_port}", flush=True)
+            # Set by compose.stream.yaml; the backend's worker writes this file over SSH.
+            session_file = os.environ.get("SARONIC_BRIDGE_SESSION_FILE")
+            access = None
+            if session_file:
+                from access import Access
+                access = Access(session_file)
+            server = start_server(commands, [c["name"] for c in config["cameras"]], control_port, access=access)
+            identity = f" runtime={access.runtime_id} session_file={session_file}" if access else ""
+            print(f"HarborControl: listening on http://127.0.0.1:{control_port}{identity}", flush=True)
         # Warm up assets, render products, and streaming before marking readiness.
         for _ in range(20):
             RenderingManager.render()

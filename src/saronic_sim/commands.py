@@ -196,9 +196,14 @@ def make_handler(commands, camera_names):
     return Handler
 
 
-def start_server(commands, camera_names, port, host="127.0.0.1"):
-    """Serve in a daemon thread. Localhost only by default: the API has no authentication."""
-    server = ThreadingHTTPServer((host, port), make_handler(commands, camera_names))
+def start_server(commands, camera_names, port, host="127.0.0.1", access=None):
+    """Serve in a daemon thread on localhost. access (access.Access) adds session-token auth."""
+    handler = make_handler(commands, camera_names)
+    if access is not None:
+        from access import guard
+
+        handler = guard(handler, access, commands)
+    server = ThreadingHTTPServer((host, port), handler)
     server.daemon_threads = True
     threading.Thread(target=server.serve_forever, name="harbor-control", daemon=True).start()
     return server
