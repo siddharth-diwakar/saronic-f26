@@ -11,6 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
+from saronic_api.bridge.tunnel import TunnelTarget
 from saronic_api.sessions.models import SimSession
 from saronic_api.sessions.service import SessionRecord, apply_claim
 from saronic_api.sessions.status import ACTIVE_STATUSES, MONITORED_STATUSES, SessionStatus
@@ -34,6 +35,9 @@ class SessionStore(Protocol):
 
     def owned_instance_names(self) -> set[str]:
         """Instance names of sessions that may still hold a GPU."""
+
+    def bridge_targets(self) -> list[TunnelTarget]:
+        """Running sessions, which the worker keeps a bridge tunnel to."""
 
     def locked(self, session_id: uuid.UUID) -> AbstractContextManager[SessionRecord | None]:
         """Row-locked record; changes commit on normal exit and roll back on error."""
@@ -80,6 +84,15 @@ class SqlSessionStore:
                 )
             )
             return set(names)
+
+    def bridge_targets(self) -> list[TunnelTarget]:
+        with Session(self._engine) as db:
+            rows = db.execute(
+                select(SimSession.id, SimSession.instance_name, SimSession.bridge_token)
+                .where(SimSession.status == SessionStatus.RUNNING.value)
+                .order_by(SimSession.created_at)
+            )
+            return [TunnelTarget(row.id, row.instance_name, row.bridge_token) for row in rows]
 
     @contextmanager
     def locked(self, session_id: uuid.UUID) -> Iterator[SimSession | None]:

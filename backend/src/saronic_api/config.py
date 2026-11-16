@@ -48,6 +48,27 @@ class Settings(BaseSettings):
     # Cap on how long a session may stay running.
     session_max_duration_s: float = Field(default=2 * 60 * 60, gt=0)
 
+    # Bridge tunnels (worker only): one SSH port forward per running session to the
+    # simulator's control bridge, which listens on the instance's 127.0.0.1.
+    bridge_tunnels_enabled: bool = True
+    # The bridge's port on the instance (HARBOR_CONTROL_PORT in compose.stream.yaml).
+    bridge_remote_port: int = Field(default=8212, ge=1, le=65535)
+    # `brev shell --host` alias suffix: the VM itself, where the host-networked sim listens,
+    # rather than a Brev workspace container.
+    bridge_ssh_host_suffix: str = "-host"
+    # Where the session file goes on the instance; relative paths are under the SSH user's home.
+    # The sim container reads it as /workspace/output/.bridge-session.json.
+    bridge_remote_session_file: str = Field(
+        default="saronic-f26/output/.bridge-session.json", min_length=1
+    )
+    # Interface the worker's forwarded ports listen on, and the address the API uses to
+    # reach them (default: the worker container's own IP, or 127.0.0.1 for a loopback bind).
+    bridge_tunnel_bind_host: str = "0.0.0.0"
+    bridge_tunnel_advertise_host: str | None = None
+    bridge_tunnel_port_start: int = Field(default=18200, ge=1024, le=65000)
+    bridge_ssh_path: str = "ssh"
+    bridge_request_timeout_s: float = Field(default=5, gt=0)
+
     # Optional Slack webhook for session failure alerts.
     slack_webhook_url: SecretStr | None = None
 
@@ -66,9 +87,9 @@ class Settings(BaseSettings):
             ) from None
         return value
 
-    @field_validator("slack_webhook_url", mode="before")
+    @field_validator("slack_webhook_url", "bridge_tunnel_advertise_host", mode="before")
     @classmethod
-    def blank_webhook_is_unset(cls, value: object) -> object:
+    def blank_is_unset(cls, value: object) -> object:
         if value is None or (isinstance(value, str) and not value.strip()):
             return None
         return value

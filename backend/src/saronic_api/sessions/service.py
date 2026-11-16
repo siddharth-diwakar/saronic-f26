@@ -10,6 +10,7 @@ from datetime import datetime
 from typing import Any, Protocol
 
 from saronic_api.brev import BrevInstance
+from saronic_api.bridge.tunnel import BridgeReport
 from saronic_api.sessions.status import SessionStatus
 from saronic_api.sessions.timeline import ensure_recording_saved, sync_timeline
 from saronic_api.sessions.transitions import (
@@ -45,6 +46,14 @@ class SessionRecord(Protocol):
     delete_requested_at: datetime | None
     outputs_saved_at: datetime | None
     ended_at: datetime | None
+    bridge_token: str
+    bridge_host: str | None
+    bridge_port: int | None
+    bridge_runtime_id: str | None
+    bridge_ready: bool
+    bridge_error: str | None
+    bridge_connected_at: datetime | None
+    bridge_checked_at: datetime | None
     events: list[Any]  # SessionEvent rows, oldest first
     log_excerpts: list[Any]
 
@@ -135,6 +144,34 @@ def apply_create_failure(record: SessionRecord, message: str, now: datetime) -> 
     record.status = SessionStatus.STOPPING.value
     sync_timeline(record, now)
     return True
+
+
+def apply_bridge_report(record: SessionRecord, report: BridgeReport, now: datetime) -> None:
+    """Record the worker's latest view of the session's bridge tunnel.
+
+    A runtime ID different from the stored one means the simulator restarted (or connected
+    for the first time): `bridge_connected_at` moves. When the bridge did not answer, the
+    last verified runtime ID is kept, so a caller can still detect a restart later. Bridge
+    checks are not session activity and do not move `last_activity_at`.
+    """
+    if record.status != SessionStatus.RUNNING:
+        return  # stopped while the worker was connecting
+    if report.runtime_id is not None and report.runtime_id != record.bridge_runtime_id:
+        record.bridge_runtime_id = report.runtime_id
+        record.bridge_connected_at = now
+    record.bridge_host = report.host
+    record.bridge_port = report.port
+    record.bridge_ready = report.ready and report.port is not None
+    record.bridge_error = report.error[:ERROR_MESSAGE_MAX] if report.error else None
+    record.bridge_checked_at = now
+
+
+def clear_bridge(record: SessionRecord, now: datetime) -> None:
+    """The worker closed the session's tunnel. The last runtime ID is kept as history."""
+    record.bridge_host = None
+    record.bridge_port = None
+    record.bridge_ready = False
+    record.bridge_checked_at = now
 
 
 def set_error(record: SessionRecord, code: str, message: str) -> None:

@@ -7,6 +7,7 @@ log excerpts and alerts hang off it and are deleted with it. A retry is a new se
 
 import enum
 import re
+import secrets
 import uuid
 from collections.abc import Iterable
 from datetime import datetime
@@ -65,6 +66,11 @@ LOG_SOURCE_SQL = f"source IN ({_sql_list(LogSource)})"
 ALERT_KIND_SQL = f"kind IN ({_sql_list(AlertKind)})"
 
 
+def new_bridge_token() -> str:
+    """Per-session secret the API sends to the simulator bridge. Never returned to clients."""
+    return secrets.token_urlsafe(32)
+
+
 def instance_name_for(session_id: uuid.UUID, prefix: str = "saronic") -> str:
     """Brev name derived from the session id, so a retried create hits "already exists"."""
     return f"{prefix}-{session_id.hex[:12]}"
@@ -112,6 +118,21 @@ class SimSession(Base):
     error_code: Mapped[str | None] = mapped_column(Text)
     error_message: Mapped[str | None] = mapped_column(Text)
     failed_step: Mapped[str | None] = mapped_column(String(32))
+
+    # Simulator control bridge, registered by the worker (see saronic_api.bridge).
+    # The worker writes sha256(token) to the instance; the API sends the token itself.
+    bridge_token: Mapped[str] = mapped_column(Text, default=new_bridge_token)
+    # Where the API reaches the worker's SSH tunnel; None while no tunnel is up.
+    bridge_host: Mapped[str | None] = mapped_column(Text)
+    bridge_port: Mapped[int | None] = mapped_column(Integer)
+    # Last simulator process verified through the tunnel. Changes when the simulator restarts.
+    bridge_runtime_id: Mapped[str | None] = mapped_column(Text)
+    # The bridge answered for this session and its simulation loop is applying commands.
+    bridge_ready: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+    bridge_error: Mapped[str | None] = mapped_column(Text)
+    # When bridge_runtime_id was first verified, and when the worker last checked the bridge.
+    bridge_connected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    bridge_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(

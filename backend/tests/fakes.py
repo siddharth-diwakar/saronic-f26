@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
 from saronic_api.brev import BrevError, BrevInstance, BrevNameTaken
+from saronic_api.bridge.tunnel import TunnelTarget
 from saronic_api.sessions.models import instance_name_for
 from saronic_api.sessions.service import apply_claim
 from saronic_api.sessions.store import ClaimedSession
@@ -116,6 +117,14 @@ class FakeRecord:
     delete_requested_at: datetime | None = None
     outputs_saved_at: datetime | None = None
     ended_at: datetime | None = None
+    bridge_token: str = "bridge-token"
+    bridge_host: str | None = None
+    bridge_port: int | None = None
+    bridge_runtime_id: str | None = None
+    bridge_ready: bool = False
+    bridge_error: str | None = None
+    bridge_connected_at: datetime | None = None
+    bridge_checked_at: datetime | None = None
     created_at: datetime = field(default_factory=lambda: START)
     events: list = field(default_factory=list)  # SessionEvent objects, oldest first
     log_excerpts: list = field(default_factory=list)
@@ -159,6 +168,13 @@ class InMemoryStore:
     def owned_instance_names(self) -> set[str]:
         active = {"requested", "provisioning", "running", "stopping"}
         return {record.instance_name for record in self.records.values() if record.status in active}
+
+    def bridge_targets(self) -> list[TunnelTarget]:
+        return [
+            TunnelTarget(r.id, r.instance_name, r.bridge_token)
+            for r in self.records.values()
+            if r.status == "running"
+        ]
 
     @contextmanager
     def locked(self, session_id: uuid.UUID):

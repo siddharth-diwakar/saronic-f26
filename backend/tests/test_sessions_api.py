@@ -165,6 +165,13 @@ def test_create_returns_202_with_resolved_commit_and_derived_instance(api):
         "health_status": None,
         "checked_at": None,
     }
+    assert body["bridge"] == {
+        "ready": False,
+        "runtime_id": None,
+        "connected_at": None,
+        "checked_at": None,
+        "error": None,
+    }
     assert body["error"] is None
     assert body["created_at"] and body["updated_at"]
     assert body["running_at"] is None and body["ended_at"] is None
@@ -172,6 +179,48 @@ def test_create_returns_202_with_resolved_commit_and_derived_instance(api):
     assert [event["step"] for event in body["timeline"]] == ["requested"]
     assert body["timeline"][0]["git_commit"] == SHA
     assert body["logs"] == {}
+
+
+def test_bridge_registration_is_shown_without_token_or_address(api, db_engine):
+    body = create(api)
+    sid = uuid.UUID(body["id"])
+    with Session(db_engine) as db:
+        token = db.get(SimSession, sid).bridge_token
+    assert len(token) >= 40
+    checked = datetime(2026, 11, 15, 12, tzinfo=UTC)
+    set_status(
+        db_engine,
+        sid,
+        "running",
+        bridge_host="10.0.1.7",
+        bridge_port=18200,
+        bridge_runtime_id="runtime-a",
+        bridge_ready=True,
+        bridge_connected_at=checked,
+        bridge_checked_at=checked,
+    )
+    got = api.get(f"/api/v1/sessions/{sid}", headers=AUTH)
+    assert got.json()["bridge"] == {
+        "ready": True,
+        "runtime_id": "runtime-a",
+        "connected_at": "2026-11-15T12:00:00Z",
+        "checked_at": "2026-11-15T12:00:00Z",
+        "error": None,
+    }
+    assert token not in got.text and "10.0.1.7" not in got.text and "18200" not in got.text
+
+    # A stopping session's bridge is not ready, whatever the worker last recorded.
+    set_status(db_engine, sid, "stopping")
+    assert api.get(f"/api/v1/sessions/{sid}", headers=AUTH).json()["bridge"]["ready"] is False
+
+
+def test_each_session_gets_its_own_bridge_token(api, db_engine):
+    first = uuid.UUID(create(api)["id"])
+    set_status(db_engine, first, "stopped")  # MAX_ACTIVE_SESSIONS is 1
+    second = uuid.UUID(create(api)["id"])
+    with Session(db_engine) as db:
+        tokens = {db.get(SimSession, sid).bridge_token for sid in (first, second)}
+    assert len(tokens) == 2
 
 
 def test_create_with_explicit_ref_and_get(api):

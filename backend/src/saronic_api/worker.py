@@ -15,20 +15,28 @@ Instance names are derived from session IDs, so a worker killed mid-tick recover
 
 import logging
 import os
+import shutil
 import signal
 import sys
 import threading
 import time
+import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from functools import partial
 from pathlib import Path
 
 from saronic_api.brev import BrevClient, BrevError, BrevInstance, BrevNameTaken, CliBrevClient
+from saronic_api.bridge.tunnel import BridgeTunnels, CliSsh, advertise_host_for, probe_bridge
 from saronic_api.config import Settings
 from saronic_api.database import build_engine, check_database
 from saronic_api.sessions.models import is_managed_instance_name
-from saronic_api.sessions.service import apply_create_failure, apply_poll
+from saronic_api.sessions.service import (
+    apply_bridge_report,
+    apply_create_failure,
+    apply_poll,
+    clear_bridge,
+)
 from saronic_api.sessions.status import MONITORED_STATUSES, TERMINAL_STATUSES
 from saronic_api.sessions.store import ClaimedSession, SessionStore, SqlSessionStore
 from saronic_api.sessions.transitions import Timeouts
@@ -36,6 +44,8 @@ from saronic_api.sessions.transitions import Timeouts
 logger = logging.getLogger(__name__)
 
 CLAIM_BATCH = 5
+# Forwarded ports per worker, from BRIDGE_TUNNEL_PORT_START. Far above MAX_ACTIVE_SESSIONS.
+TUNNEL_PORTS = 64
 
 
 def utcnow() -> datetime:
@@ -54,6 +64,7 @@ class Worker:
         clock: Callable[[], datetime] = utcnow,
         beat: Callable[[], None] = lambda: None,
         timeouts: Timeouts | None = None,
+        tunnels: BridgeTunnels | None = None,
     ) -> None:
         self._store = store
         self._brev = brev
@@ -63,11 +74,32 @@ class Worker:
         self._timeouts = timeouts or Timeouts()
         # Called after each Brev call so a slow CLI call doesn't look like a hung worker.
         self._beat = beat
+        self._tunnels = tunnels
 
     def tick(self) -> None:
-        """Provision requested sessions, poll Brev, reap abandoned instances, then delete."""
+        """Provision, poll Brev and delete, then keep bridge tunnels to running sessions."""
         self.provision()
         self.monitor()
+        self.connect()
+
+    def connect(self) -> None:
+        """Keep a tunnel to each running session's simulator bridge and record it on the row.
+
+        Runs after monitor(), so a session that stopped this tick loses its tunnel now.
+        """
+        if self._tunnels is None:
+            return
+        try:
+            targets = self._store.bridge_targets()
+        except Exception:
+            logger.exception("Could not list sessions for bridge tunnels")
+            return
+        reports, closed = self._tunnels.sync(targets)
+        now = self._clock()
+        for session_id, report in reports.items():
+            self._update_id(session_id, partial(apply_bridge_report, report=report, now=now))
+        for session_id in closed:
+            self._update_id(session_id, partial(clear_bridge, now=now))
 
     def provision(self) -> None:
         """Claim requested sessions and create each Brev instance, unless that name already exists."""
@@ -218,12 +250,15 @@ class Worker:
                 self._beat()
 
     def _update(self, claimed: ClaimedSession, change: Callable) -> None:
+        self._update_id(claimed.id, change)
+
+    def _update_id(self, session_id: uuid.UUID, change: Callable) -> None:
         try:
-            with self._store.locked(claimed.id) as record:
+            with self._store.locked(session_id) as record:
                 if record is not None:
                     change(record)
         except Exception:
-            logger.exception("Failed to update session %s", claimed.id)
+            logger.exception("Failed to update session %s", session_id)
 
 
 def _rename(record, *, name: str) -> None:
@@ -281,6 +316,7 @@ def main() -> int:
             cli_path=settings.brev_cli_path,
             timeout_s=settings.brev_command_timeout_s,
         )
+        tunnels = build_tunnels(settings, brev, beat) if settings.bridge_tunnels_enabled else None
         worker = Worker(
             SqlSessionStore(engine),
             brev,
@@ -292,6 +328,7 @@ def main() -> int:
                 idle=timedelta(seconds=settings.session_idle_timeout_s),
                 max_duration=timedelta(seconds=settings.session_max_duration_s),
             ),
+            tunnels=tunnels,
         )
         stop = threading.Event()
 
@@ -306,11 +343,51 @@ def main() -> int:
             settings.brev_launchable_id,
             settings.worker_poll_interval_s,
         )
-        run(worker, interval_s=settings.worker_poll_interval_s, beat=beat, stop=stop)
+        try:
+            run(worker, interval_s=settings.worker_poll_interval_s, beat=beat, stop=stop)
+        finally:
+            if tunnels is not None:
+                tunnels.close_all()
         logger.info("Worker stopped")
         return 0
     finally:
         engine.dispose()
+
+
+def build_tunnels(
+    settings: Settings, brev: CliBrevClient, beat: Callable[[], None]
+) -> BridgeTunnels:
+    """Bridge tunnels from settings. The Brev key stays in this process and its ssh children."""
+    api_key = settings.brev_api_key.get_secret_value() if settings.brev_api_key else None
+    if shutil.which(settings.bridge_ssh_path) is None:
+        logger.error(
+            "ssh not found at %r; bridge tunnels will fail until it is installed",
+            settings.bridge_ssh_path,
+        )
+    advertise = advertise_host_for(
+        settings.bridge_tunnel_bind_host, settings.bridge_tunnel_advertise_host
+    )
+    start = settings.bridge_tunnel_port_start
+    logger.info(
+        "Bridge tunnels: %s:%s-%s, advertised to the API as %s",
+        settings.bridge_tunnel_bind_host,
+        start,
+        start + TUNNEL_PORTS - 1,
+        advertise,
+    )
+    env = {**os.environ, "BREV_API_KEY": api_key} if api_key else dict(os.environ)
+    return BridgeTunnels(
+        ssh=CliSsh(env=env, ssh_path=settings.bridge_ssh_path, secret=api_key),
+        refresh=brev.refresh_ssh_config,
+        advertise_host=advertise,
+        ports=range(start, start + TUNNEL_PORTS),
+        remote_port=settings.bridge_remote_port,
+        bind_host=settings.bridge_tunnel_bind_host,
+        alias_suffix=settings.bridge_ssh_host_suffix,
+        remote_session_file=settings.bridge_remote_session_file,
+        prober=partial(probe_bridge, timeout_s=settings.bridge_request_timeout_s),
+        beat=beat,
+    )
 
 
 if __name__ == "__main__":
