@@ -47,9 +47,14 @@ def load_config(path=DEFAULT_SCENARIO):
         number(sim[key], key, 1)
     if sim["render_hz"] > sim["physics_hz"] or sim["record_hz"] > sim["render_hz"]:
         raise ValueError("Rates must satisfy record_hz <= render_hz <= physics_hz")
-    ratio = sim["physics_hz"] / sim["render_hz"]
-    if not ratio.is_integer():
-        raise ValueError("physics_hz must be an integer multiple of render_hz")
+    for key in ("physics_hz", "render_hz", "record_hz"):
+        if isinstance(sim[key], bool) or not isinstance(sim[key], int):
+            raise ValueError(f"{key} must be an integer")
+    # Steps are whole physics periods in integer nanoseconds (100 or 200 Hz for 20 ms steps).
+    if 1_000_000_000 % sim["physics_hz"]:
+        raise ValueError("physics_hz must divide one second into whole nanoseconds, for example 100 or 200")
+    if sim["physics_hz"] % sim["render_hz"] or sim["physics_hz"] % sim["record_hz"]:
+        raise ValueError("physics_hz must be an integer multiple of render_hz and record_hz")
     number(sim["duration"], "duration", 0.001)
     if isinstance(sim["seed"], bool) or not isinstance(sim["seed"], int) or sim["seed"] < 0:
         raise ValueError("seed must be a nonnegative integer")

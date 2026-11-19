@@ -3,7 +3,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock
 
-from physics import attach_boat
+from physics import attach_entities
 
 
 class PhysicsStartup(unittest.TestCase):
@@ -16,7 +16,7 @@ class PhysicsStartup(unittest.TestCase):
             events.append("initialize")
             attached = True
 
-        body = SimpleNamespace(count=1)
+        body = SimpleNamespace(count=2, prim_paths=["/World/Entities/boat", "/World/Entities/buoy"])
         view = Mock()
         view.create_rigid_body_view.return_value = body
 
@@ -31,18 +31,18 @@ class PhysicsStartup(unittest.TestCase):
         tensors = SimpleNamespace(create_simulation_view=create)
         for _ in range(2):
             attached = False  # Stop detaches physics; Play must initialize again.
-            self.assertEqual(attach_boat(manager, rendering, tensors, 42), (view, body))
+            self.assertEqual(attach_entities(manager, rendering, tensors, 42, 2), (view, body, body.prim_paths))
         self.assertEqual(events, ["render", "initialize", "tensor"] * 2)
         view.set_subspace_roots.assert_called_with("/")
-        view.create_rigid_body_view.assert_called_with("/World/Boat")
+        view.create_rigid_body_view.assert_called_with("/World/Entities/*")
 
-    def test_missing_boat_fails_before_readiness(self):
+    def test_missing_entity_fails_before_readiness(self):
         view = Mock()
-        view.create_rigid_body_view.return_value = SimpleNamespace(count=0)
+        view.create_rigid_body_view.return_value = SimpleNamespace(count=1, prim_paths=["/World/Entities/boat"])
         tensors = Mock()
         tensors.create_simulation_view.return_value = view
-        with self.assertRaisesRegex(RuntimeError, "exactly one boat"):
-            attach_boat(Mock(), Mock(), tensors, 42)
+        with self.assertRaisesRegex(RuntimeError, "Expected 2 entity rigid bodies"):
+            attach_entities(Mock(), Mock(), tensors, 42, 2)
 
 
 if __name__ == "__main__":

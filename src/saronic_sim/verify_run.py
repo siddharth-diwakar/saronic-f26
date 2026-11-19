@@ -15,7 +15,8 @@ def verify(folder, powered):
     run = runs[-1]
     config = json.loads((run / "scenario.json").read_text())
     with (run / "trajectory.csv").open() as file:
-        rows = list(csv.DictReader(file))
+        # One row per entity per sample; the default harbor world has the single entity "boat".
+        rows = [row for row in csv.DictReader(file) if row["entity_id"] == "boat"]
     if len(rows) < 10 or float(rows[-1]["time"]) < 7:
         raise RuntimeError("Run did not reach the expected duration")
     states = np.array([[float(row[key]) for key in ("x", "y", "z", "qx", "qy", "qz", "qw", "vx", "vy", "vz", "wx", "wy", "wz")] for row in rows])
