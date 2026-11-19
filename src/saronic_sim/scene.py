@@ -16,7 +16,8 @@ def camera_transform(position, target):
     return Gf.Matrix4d().SetLookAt(Gf.Vec3d(*position), Gf.Vec3d(*target), Gf.Vec3d(0, 0, 1)).GetInverse()
 
 
-def build_scene(config, boat_usd=None):
+def build_harbor(config):
+    """The static harbor: physics scene, lights, water, shore, dock, pilings, buoys, overview camera."""
     import omni.usd
     from pxr import Gf, Sdf, UsdGeom, UsdLux, UsdPhysics, UsdShade, PhysxSchema
     stage = omni.usd.get_context().get_stage()
@@ -89,44 +90,139 @@ def build_scene(config, boat_usd=None):
         UsdShade.MaterialBindingAPI.Apply(buoy.GetPrim()).Bind(mats[color])
         UsdPhysics.CollisionAPI.Apply(buoy.GetPrim())
 
-    b = config["boat"]
-    length, width, height = (b[k] for k in ("length", "width", "height"))
-    boat = UsdGeom.Xform.Define(stage, "/World/Boat")
-    boat.AddTranslateOp().Set(Gf.Vec3d(*b["position"]))
-    boat.AddRotateZOp().Set(b["heading"])
-    UsdPhysics.RigidBodyAPI.Apply(boat.GetPrim())
-    mass = UsdPhysics.MassAPI.Apply(boat.GetPrim())
-    mass.CreateMassAttr(b["mass"])
-    mass.CreateCenterOfMassAttr(Gf.Vec3f(0, 0, 0))
-    mass.CreateDiagonalInertiaAttr(Gf.Vec3f(*[b["mass"]*v/12 for v in (width**2+height**2, length**2+height**2, length**2+width**2)]))
-    collision = box("/World/Boat/CollisionHull", (length, width, height), (0, 0, 0), "hull", True)
-    collision.CreateVisibilityAttr("invisible")
-    if boat_usd:
-        model = UsdGeom.Xform.Define(stage, "/World/Boat/Model")
-        model.GetPrim().GetReferences().AddReference(str(Path(boat_usd).resolve()))
-        # Reject nested rigid bodies rather than silently applying two simulations.
-        from pxr import Usd
-        for prim in Usd.PrimRange(model.GetPrim()):
-            if prim.HasAPI(UsdPhysics.RigidBodyAPI):
-                raise ValueError("Custom boat model must be visual-only; remove its RigidBodyAPI")
-    else:
-        box("/World/Boat/Hull", (length, width, height), (0, 0, 0), "hull")
-        box("/World/Boat/Deck", (length*.93, width*.93, .08), (0, 0, height/2), "deck")
-        box("/World/Boat/Cabin", (length*.3, width*.65, .65), (-length*.15, 0, height/2+.36), "deck")
-        box("/World/Boat/Windshield", (.025, width*.55, .35), (0.02, 0, height/2+.5), "glass")
-        box("/World/Boat/Mast", (.07, .07, 1.5), (-length*.15, 0, height/2+1), "hull")
-    UsdGeom.Xform.Define(stage, "/World/Boat/Cameras")
-    camera_paths = []
-    for c in config["cameras"]:
-        path = "/World/Boat/Cameras/"+c["name"]
-        camera = UsdGeom.Camera.Define(stage, path)
-        camera.AddTransformOp().Set(camera_transform(c["position"], c["target"]))
-        camera.CreateFocalLengthAttr(c["focal_length"])
-        camera.CreateHorizontalApertureAttr(20.955)
-        camera.CreateVerticalApertureAttr(20.955*c["resolution"][1]/c["resolution"][0])
-        camera.CreateClippingRangeAttr(Gf.Vec2f(.05, 250))
-        camera_paths.append(path)
     overview = UsdGeom.Camera.Define(stage, "/World/Overview")
     overview.AddTransformOp().Set(camera_transform(OVERVIEW_POSITION, OVERVIEW_TARGET))
     overview.CreateFocalLengthAttr(OVERVIEW_FOCAL_LENGTH)
-    return stage, camera_paths
+    global _MATERIALS
+    _MATERIALS = mats
+    return stage
+
+
+_MATERIALS = {}
+ENTITIES_ROOT = "/World/Entities"
+CAMERAS_ROOT = "/World/Cameras"
+
+
+def entity_path(entity_id):
+    return f"{ENTITIES_ROOT}/{entity_id}"
+
+
+def camera_path(camera):
+    parent = camera["parent_entity_id"]
+    return f"{entity_path(parent)}/Cameras/{camera['id']}" if parent else f"{CAMERAS_ROOT}/{camera['id']}"
+
+
+def remove_world(stage):
+    for root in (ENTITIES_ROOT, CAMERAS_ROOT):
+        if stage.GetPrimAtPath(root):
+            stage.RemovePrim(root)
+
+
+def build_world(stage, world, catalog, boat_usd=None):
+    """Entities and cameras for a validated world (worldconfig.parse_world).
+
+    Returns {camera id: prim path}. Every entity is a rigid body at /World/Entities/<id>;
+    external entities are kinematic, so physics never moves them.
+    """
+    from pxr import Gf, Usd, UsdGeom, UsdPhysics, UsdShade
+    mats = _MATERIALS
+    UsdGeom.Xform.Define(stage, ENTITIES_ROOT)
+    UsdGeom.Xform.Define(stage, CAMERAS_ROOT)
+
+    def shape(define, path, mat, collision, **attrs):
+        prim = define(stage, path)
+        for name, value in attrs.items():
+            getattr(prim, f"Create{name}Attr")(value)
+        UsdShade.MaterialBindingAPI.Apply(prim.GetPrim()).Bind(mats[mat])
+        if collision:
+            UsdPhysics.CollisionAPI.Apply(prim.GetPrim())
+        return prim
+
+    def box(path, dimensions, position, mat, collision=False):
+        cube = shape(UsdGeom.Cube.Define, path, mat, collision, Size=1)
+        cube.AddTranslateOp().Set(Gf.Vec3d(*position))
+        cube.AddScaleOp().Set(Gf.Vec3f(*dimensions))
+        return cube
+
+    for entity in world["entities"]:
+        asset = catalog[entity["asset_id"]]
+        path = entity_path(entity["id"])
+        root = UsdGeom.Xform.Define(stage, path)
+        pose = entity["pose"]
+        root.AddTranslateOp().Set(Gf.Vec3d(*pose["position_m"]))
+        x, y, z, w = pose["orientation_xyzw"]
+        root.AddOrientOp(UsdGeom.XformOp.PrecisionDouble).Set(Gf.Quatd(w, x, y, z))
+        rigid = UsdPhysics.RigidBodyAPI.Apply(root.GetPrim())
+        rigid.CreateKinematicEnabledAttr(entity["motion_type"] == "external")
+        mass_api = UsdPhysics.MassAPI.Apply(root.GetPrim())
+        if asset["kind"] == "boat":
+            length, width, height, mass = (asset[k] for k in ("length", "width", "height", "mass"))
+            mass_api.CreateMassAttr(mass)
+            mass_api.CreateCenterOfMassAttr(Gf.Vec3f(0, 0, 0))
+            mass_api.CreateDiagonalInertiaAttr(Gf.Vec3f(*[mass*v/12 for v in (width**2+height**2, length**2+height**2, length**2+width**2)]))
+            collision = box(path+"/CollisionHull", (length, width, height), (0, 0, 0), "hull", True)
+            collision.CreateVisibilityAttr("invisible")
+            if boat_usd:
+                model = UsdGeom.Xform.Define(stage, path+"/Model")
+                model.GetPrim().GetReferences().AddReference(str(Path(boat_usd).resolve()))
+                # Reject nested rigid bodies rather than silently applying two simulations.
+                for prim in Usd.PrimRange(model.GetPrim()):
+                    if prim.HasAPI(UsdPhysics.RigidBodyAPI):
+                        raise ValueError("Custom boat model must be visual-only; remove its RigidBodyAPI")
+            else:
+                box(path+"/Hull", (length, width, height), (0, 0, 0), "hull")
+                box(path+"/Deck", (length*.93, width*.93, .08), (0, 0, height/2), "deck")
+                box(path+"/Cabin", (length*.3, width*.65, .65), (-length*.15, 0, height/2+.36), "deck")
+                box(path+"/Windshield", (.025, width*.55, .35), (0.02, 0, height/2+.5), "glass")
+                box(path+"/Mast", (.07, .07, 1.5), (-length*.15, 0, height/2+1), "hull")
+        elif asset["kind"] == "buoy":
+            mass_api.CreateMassAttr(50.0)
+            shape(UsdGeom.Cylinder.Define, path+"/Body", asset["color"], True, Radius=asset["radius"], Height=asset["height"])
+        else:
+            mass_api.CreateMassAttr(100.0)
+            box(path+"/Body", asset["size"], (0, 0, 0), asset["color"], True)
+    ops = UsdOps(stage)
+    paths = {}
+    for camera in world["cameras"]:
+        path = camera_path(camera)
+        if camera["parent_entity_id"]:
+            UsdGeom.Xform.Define(stage, path.rsplit("/", 1)[0])
+        usd_camera = UsdGeom.Camera.Define(stage, path)
+        usd_camera.AddTransformOp()
+        ops.update_camera(path, camera)
+        paths[camera["id"]] = path
+    return paths
+
+
+class UsdOps:
+    """Stage edits the world makes on the simulation thread."""
+
+    def __init__(self, stage):
+        self.stage = stage
+
+    def update_camera(self, path, camera):
+        from pxr import Gf, UsdGeom
+        import worldconfig
+        usd_camera = UsdGeom.Camera(self.stage.GetPrimAtPath(path))
+        usd_camera.GetOrderedXformOps()[0].Set(Gf.Matrix4d(worldconfig.usd_camera_matrix(camera["pose"])))
+        optics = worldconfig.usd_optics(camera)
+        usd_camera.CreateFocalLengthAttr().Set(optics["focal_length"])
+        usd_camera.CreateHorizontalApertureAttr().Set(optics["horizontal_aperture"])
+        usd_camera.CreateVerticalApertureAttr().Set(optics["vertical_aperture"])
+        usd_camera.CreateHorizontalApertureOffsetAttr().Set(optics["horizontal_aperture_offset"])
+        usd_camera.CreateVerticalApertureOffsetAttr().Set(optics["vertical_aperture_offset"])
+        usd_camera.CreateClippingRangeAttr().Set(Gf.Vec2f(*optics["clipping_range"]))
+
+    def update_lights(self, environment):
+        from pxr import Gf, UsdGeom, UsdLux
+        sun = self.stage.GetPrimAtPath("/World/Sun")
+        UsdLux.DistantLight(sun).GetIntensityAttr().Set(environment["sun_intensity"])
+        UsdGeom.Xformable(sun).GetOrderedXformOps()[0].Set(Gf.Vec3f(*environment["sun_rotation"]))
+        UsdLux.DomeLight(self.stage.GetPrimAtPath("/World/Sky")).GetIntensityAttr().Set(environment["sky_intensity"])
+
+    def update_viewer(self, spec, aim):
+        from pxr import UsdGeom
+        camera = UsdGeom.Camera(self.stage.GetPrimAtPath("/World/Overview"))
+        if aim:
+            camera.GetOrderedXformOps()[0].Set(camera_transform(spec["position"], spec["target"]))
+        camera.GetFocalLengthAttr().Set(spec["focal_length"])

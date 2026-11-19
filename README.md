@@ -126,41 +126,104 @@ The original placement-only command remains available:
 ./scripts/run.sh deploy boat --x 10 --y 5 --heading 90
 ```
 
-## Runtime control API
+## Control bridge
 
-A running harbor accepts JSON commands to move the boat, adjust cameras, and
-change the environment without restarting. The streaming viewer serves it on
-port `8212` (`HARBOR_CONTROL_PORT`); finite runs enable it with
-`--control-port <port>`. It binds to **127.0.0.1 only** and has no
-authentication, so reach it from your machine through SSH, for example
+A running harbor serves an HTTP bridge inside the simulator process, so clients
+change the live scene and read the result without restarting Isaac Sim. The
+streaming viewer serves it on port `8212` (`HARBOR_CONTROL_PORT`); finite runs
+enable it with `--control-port <port>`. It binds to **127.0.0.1 only**: the
+backend's worker reaches it through an SSH tunnel; by hand, use
 `ssh -L 8212:127.0.0.1:8212 <brev-instance>`. Do not open it publicly.
+
+HTTP threads only validate and queue. The simulation thread applies queued
+commands in order between physics steps, so the network never writes to the
+scene. A `202` means **accepted, not applied**: poll `GET /v1/commands/{id}`, or
+add `?wait=<seconds>` to block until the command is applied or failed.
+`.harbor-ready` and `GET /health` report ready only after the simulation thread
+has serviced a probe command against the loaded scene; until then every command
+returns `503 not_ready`.
+
+### Conventions
+
+- Meters, seconds, Z-up world. A vessel's body frame: +X forward, +Y port, +Z up,
+  origin at the hull center.
+- `orientation_xyzw` quaternions, normalized on input. A pose is
+  `{"frame_id", "position_m", "orientation_xyzw"}`; entity poses are in `world`.
+- A camera pose places the **optical frame** in its parent entity's body frame (or
+  `world` when `parent_entity_id` is null): +Z along the view, +X image right,
+  +Y image down (OpenCV). Intrinsics `fx, fy, cx, cy` are pixels at the configured
+  resolution; responses report the calibration the USD camera actually uses.
+- Time is integer nanoseconds. `dt_ns` must be a whole number of physics periods;
+  anything else is rejected with `inexact_time`, never rounded. The default
+  scenario runs physics at 200 Hz, so a 20 ms step is exactly 4 physics steps.
+- `world_revision` increases on every configuration change (world load, pose patch,
+  camera, environment, reset). Send `episode_id`, `expected_step` and
+  `expected_revision` to have stale commands refused (`stale_episode`,
+  `stale_step`, `stale_revision`) instead of applied.
+- Send an `Idempotency-Key` header on retries: a repeated key returns the first
+  command instead of applying it again (`409 idempotency_conflict` if the body
+  differs). The bundled client does this automatically.
+- `runtime_id` (in `/health`, and accepted in bodies) changes when the simulator
+  restarts. Command IDs restart too, so a mismatched `runtime_id` returns
+  `409 runtime_changed`: earlier outcomes are unknown, not replayed.
+
+### Routes
+
+| Route | Body | Result |
+| --- | --- | --- |
+| `GET /health` | | `runtime_id`, `ready`, `episode_id` |
+| `PUT /v1/world` | `WorldConfig`: `schema_version` 1, `seed`, `motion_mode` (`external` or `internal`), `physics_hz`, `entities[]`, `cameras[]`, `environment` | `entity_ids`, `camera_ids`, `episode_id`, `world_revision` |
+| `PATCH /v1/entities/{id}/pose` | `pose` (full) | `entity_id`, applied `pose` read back from PhysX, `world_revision` |
+| `PATCH /v1/cameras/{id}` | `pose`, `intrinsics`, `clipping_range_m` | effective `camera` |
+| `PATCH /v1/environment` | `current_mps`, `sun_rotation`, `sun_intensity`, `sky_intensity` | `environment` |
+| `POST /v1/step` | `dt_ns`, `entity_updates[{entity_id, pose}]`, `camera_ids` (default all), `channels` (`rgb`, `depth`) | Observation |
+| `POST /v1/render` | `camera_ids`, `channels` | Observation, time unchanged |
+| `POST /v1/reset` | optional `seed`, `expected_revision` | new `episode_id`, `state` |
+| `GET /v1/state` | | State |
+| `GET /v1/commands/{id}` | | `command_id`, `status` (`queued`, `running`, `applied`, `failed`), `applied_sim_time_ns`, `result` or `error` |
+| `GET /v1/frames/{frame_id}` | | RGB as PNG; depth as little-endian float32, height x width, meters to the image plane |
+
+Entities use the approved catalog (`harbor_boat`, `buoy_red`, `buoy_green`,
+`marker_box`). `motion_type` `external` makes an entity kinematic: Isaac physics
+never moves it, and its supplied pose is re-written around every physics step,
+so the read-back pose is the supplied pose. `dynamic` boats (only in `internal`
+mode) are driven by the approximate hydrodynamics model, the demo mode. Camera
+`resolution`, `channels` and parent, `physics_hz`, and `water_level_m` are fixed
+by the world or runtime; changing them live is rejected with `unsupported_change`.
+
+State: `episode_id`, `step_index`, `sim_time_ns`, `world_revision`, `entities`
+(pose, `linear_velocity_mps`, `angular_velocity_radps`), `cameras`, `environment`,
+`controls`. An Observation adds `actual_dt_ns` and `frames[]`: `frame_id`,
+`camera_id`, `channel`, `sim_time_ns`, `step_index`, `world_revision`, the
+effective `camera` calibration and `camera_world_pose`, `encoding`, `width`,
+`height`, and the `url` to download. Frames are kept in memory (512 MB, oldest
+first).
+
+Errors refused at the HTTP layer are `{"error": code, "message", "field"}`;
+failed commands carry `"error": {"code", "message", "field"}`.
+
+The harbor starts with the scenario as its world: one `dynamic` boat with id
+`boat` and the `Forward` and `Mast` cameras. The original single-boat commands
+still work on the first entity through `POST /commands`:
 
 ```bash
 curl -s localhost:8212/commands -d '{"type": "set_controls", "throttle": 0.4, "steering": 0.1}'
 curl -s localhost:8212/commands -d '{"type": "set_camera", "name": "Forward", "target": [12, 3, 0.5], "focal_length": 24}'
-curl -s localhost:8212/commands/1   # queued, applied, or failed with an error
-curl -s localhost:8212/state        # time, boat pose/velocity, controls, cameras, environment
+curl -s localhost:8212/commands -d '{"type": "set_pose", "position": [5, -3, 0.3], "heading": 90}'
+curl -s localhost:8212/v1/commands/2   # queued, running, applied, or failed
 ```
 
-| `type` | Fields (all optional unless noted) |
-| --- | --- |
-| `set_controls` | `throttle`, `steering`: -1 to 1. Viewer sliders follow. |
-| `set_pose` | `position` `[x, y, z]`, `heading` degrees. Teleports, zeroes velocity; a heading also levels roll/pitch. |
-| `reset` | Returns the boat to its initial pose. |
-| `set_camera` | `name` (required: a scenario camera or `Overview`), `position`, `target`, `focal_length` (mm). Boat cameras use the boat frame, `Overview` the world frame. |
-| `set_environment` | `current` `[x, y, z]` m/s (affects drag), `sun_intensity`, `sky_intensity`, `sun_rotation` `[x, y, z]` degrees. |
-
-`POST /commands` validates immediately and returns `202` with an `id`, or `400`
-with an error. The simulation applies queued commands on its own thread before
-the next physics step. Movement fails while the timeline is stopped. Applied
-commands are appended with simulation time to the run's `commands.jsonl`.
-Camera resolution is fixed at startup because render products depend on it.
+`set_controls`, `set_pose` (partial pose, `heading` levels roll and pitch),
+`reset`, `set_camera` (`Overview` is the viewer's camera), `set_environment`
+(`current` in m/s) and `step` (`seconds`, `pose`, `physics`, `images`, `depth`)
+keep their fields. Applied commands are appended, with simulation time and
+episode, to the run's `commands.jsonl`.
 
 ## Gym-style stepping
 
 For closed-loop experiments, start the harbor in **lockstep**: simulation time
-advances only when a `step` command arrives, and each step returns what every
-camera sees.
+advances only when a step arrives, and each step returns what the cameras see at
+its boundary.
 
 ```bash
 ./scripts/run.sh harbor --lockstep --control-port 8212   # finite runs: stop the viewer first
@@ -173,23 +236,21 @@ decode images):
 from saronic_env import HarborEnv
 
 env = HarborEnv("http://127.0.0.1:8212")
-observation = env.reset()                     # initial pose, rendered
-observation = env.step(
-    pose={"position": [3, 0, 0.3], "orientation_xyzw": [0, 0, 0, 1]},
-    seconds=0.02,                             # rounded to whole physics steps
-    physics=False,                            # hold the pose: an external model owns motion
+env.load_world(world)                         # WorldConfig as above, motion_mode "external"
+episode = env.reset_episode()["episode_id"]
+observation = env.advance(
+    20_000_000,                               # exactly 20 ms
+    [{"entity_id": "alpha", "pose": {"position_m": [3, 0, 0.3], "orientation_xyzw": [0, 0, 0, 1]}}],
+    channels=["rgb", "depth"],
+    episode_id=episode, expected_step=0,
 )
-observation.rgb("Forward")                    # HxWx3 uint8; observation.png() for raw bytes
-observation.state["boat"]["position"]
+observation.rgb("bow")                        # HxWx3 uint8, downloaded on first use
+observation.entity("alpha")["pose"]
 ```
 
-`physics=True` (default) instead simulates the harbor's own buoyancy, drag, and
-thrust for `seconds` after placing the boat. `depth=True` adds per-camera
-distance-to-image-plane arrays. `seconds=0` (`env.render()`) renders without
-advancing time. Over HTTP, a step is `POST /commands?wait=60` with
-`{"type": "step", ...}`; the response carries `result.state` and
-`result.frames.<camera>.rgb_png_base64`. Other commands stay queued until the
-current step has rendered.
+The single-boat helpers remain: `env.step(pose=..., seconds=0.02, physics=False)`
+holds a pose for one step on the default harbor boat, `env.render()` renders
+without advancing time, and `env.reset()` starts a new episode.
 
 `examples/closed_loop.py` is the P0 loop: a stand-in for Saronic's boat model
 receives each step's images and pose, returns the next pose 20 ms later, and

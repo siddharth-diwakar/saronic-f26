@@ -51,14 +51,14 @@ def main():
         writer = csv.writer(file)
         writer.writerow(["step", "time", "x", "y", "z", "qx", "qy", "qz", "qw"])
         for index in range(args.steps):
-            boat = observation.state["boat"]
+            boat = observation.entity("boat")["pose"]
             images = {camera: observation.png(camera) for camera in observation.cameras}
             for camera, png in images.items():
                 folder = args.output / camera
                 folder.mkdir(exist_ok=True)
                 (folder / f"{index:06d}.png").write_bytes(png)
-            writer.writerow([index, observation.time, *boat["position"], *boat["orientation_xyzw"]])
-            position, orientation = model.next_pose(images, boat["position"], boat["orientation_xyzw"], DT)
+            writer.writerow([index, observation.time, *boat["position_m"], *boat["orientation_xyzw"]])
+            position, orientation = model.next_pose(images, boat["position_m"], boat["orientation_xyzw"], DT)
             # physics=False: the boat model owns motion; the harbor only places and renders.
             observation = env.step(pose={"position": position, "orientation_xyzw": orientation}, seconds=DT, physics=False)
     print(f"Closed loop finished: {args.steps} steps, frames and poses in {args.output}")
