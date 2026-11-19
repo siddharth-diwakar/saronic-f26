@@ -128,33 +128,47 @@ The original placement-only command remains available:
 
 ## Runtime control API
 
-A running harbor accepts JSON commands to move the boat, adjust cameras, and
-change the environment without restarting. The streaming viewer serves it on
+A running harbor accepts JSON to load a world, place entities, adjust cameras,
+and step or render without restarting. The streaming viewer serves it on
 port `8212` (`HARBOR_CONTROL_PORT`); finite runs enable it with
 `--control-port <port>`. It binds to **127.0.0.1 only** and has no
 authentication, so reach it from your machine through SSH, for example
 `ssh -L 8212:127.0.0.1:8212 <brev-instance>`. Do not open it publicly.
 
+Mutating routes validate immediately and return **202** with a `command_id`.
+The simulation applies queued work on its own thread. `GET /commands/{id}` is
+`queued`, `applied`, or `failed`. `POST /step` and `POST /render` observations
+reference PNG RGB and NPY depth at `GET /frames/{id}/{camera_id}/rgb|depth`.
+
 ```bash
-curl -s localhost:8212/commands -d '{"type": "set_controls", "throttle": 0.4, "steering": 0.1}'
-curl -s localhost:8212/commands -d '{"type": "set_camera", "name": "Forward", "target": [12, 3, 0.5], "focal_length": 24}'
-curl -s localhost:8212/commands/1   # queued, applied, or failed with an error
-curl -s localhost:8212/state        # time, boat pose/velocity, controls, cameras, environment
+curl -s -X PUT localhost:8212/world -d @world.json
+curl -s -X PATCH localhost:8212/entities/ownship/pose -d '{"position":[5,0,0.3],"orientation":[0,0,0,1]}'
+curl -s -X PATCH localhost:8212/cameras/Forward -d '{"focal_length":24}'
+curl -s -X PATCH localhost:8212/environment -d '{"current":[0.2,0,0]}'
+curl -s localhost:8212/step -d '{"dt":0.1,"poses":[],"cameras":["Forward"]}'
+curl -s localhost:8212/render -d '{"cameras":["Forward"]}'
+curl -s localhost:8212/reset
+curl -s localhost:8212/state
+curl -s localhost:8212/commands/1
 ```
 
-| `type` | Fields (all optional unless noted) |
+| Route | Result |
 | --- | --- |
-| `set_controls` | `throttle`, `steering`: -1 to 1. Viewer sliders follow. |
-| `set_pose` | `position` `[x, y, z]`, `heading` degrees. Teleports, zeroes velocity; a heading also levels roll/pitch. |
-| `reset` | Returns the boat to its initial pose. |
-| `set_camera` | `name` (required: a scenario camera or `Overview`), `position`, `target`, `focal_length` (mm). Boat cameras use the boat frame, `Overview` the world frame. |
-| `set_environment` | `current` `[x, y, z]` m/s (affects drag), `sun_intensity`, `sky_intensity`, `sun_rotation` `[x, y, z]` degrees. |
+| `PUT /world` | Load boats/obstacles, camera mounts, environment, and seed. Returns stable entity and camera IDs. Resolution is fixed here. |
+| `PATCH /entities/{id}/pose` | Place a vessel or obstacle with `position` `[x,y,z]` and `orientation` `[qx,qy,qz,qw]`. Zeroes velocity. |
+| `PATCH /cameras/{id}` | Mount/optics: `position`, `target`, `focal_length`. Rejects `resolution`. |
+| `PATCH /environment` | `current`, `sun_intensity`, `sky_intensity`, `sun_rotation`. Other fields are 400. |
+| `POST /step` | Apply optional external poses, advance exact `dt` seconds, capture selected cameras at that boundary. |
+| `POST /render` | Capture selected cameras without advancing time. |
+| `POST /reset` | Restore the loaded world, controls, velocities, and clock; starts a new episode. |
+| `GET /state` | Actual time, episode, entities, cameras, environment, and controls. |
+| `GET /commands/{id}` | Completed result; observations point at frame downloads. |
 
-`POST /commands` validates immediately and returns `202` with an `id`, or `400`
-with an error. The simulation applies queued commands on its own thread before
-the next physics step. Movement fails while the timeline is stopped. Applied
-commands are appended with simulation time to the run's `commands.jsonl`.
-Camera resolution is fixed at startup because render products depend on it.
+`POST /commands` with `{type, ...}` remains for `set_controls`, `set_pose`,
+`set_camera`, `set_environment`, and `reset`. Movement fails while the timeline
+is stopped. Applied commands are appended with simulation time to
+`commands.jsonl`. Camera resolution stays fixed after `PUT /world` because
+render products depend on it.
 
 ## Verification
 
