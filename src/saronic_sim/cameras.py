@@ -1,4 +1,5 @@
 """Read RGB and ideal geometric depth from independent render products."""
+import io
 from pathlib import Path
 
 
@@ -15,6 +16,25 @@ class CameraRecorder:
             depth.attach([product])
             self.products.append(product)
             self.annotators.append((camera["name"], rgb, depth))
+
+    def grab(self, names=None):
+        """Return PNG and NPY bytes per camera for a control-API observation."""
+        import numpy as np
+        from PIL import Image
+        wanted = None if names is None else set(names)
+        frames = {}
+        for name, rgb, depth in self.annotators:
+            if wanted is not None and name not in wanted:
+                continue
+            color, distance = rgb.get_data(), depth.get_data()
+            if color.size == 0 or distance.size == 0:
+                raise RuntimeError(f"Camera {name} has no rendered data")
+            image = io.BytesIO()
+            Image.fromarray(color[..., :3]).save(image, format="PNG")
+            array = io.BytesIO()
+            np.save(array, distance)
+            frames[name] = {"rgb": image.getvalue(), "depth": array.getvalue()}
+        return frames
 
     def capture(self, frame):
         import numpy as np

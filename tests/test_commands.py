@@ -115,6 +115,85 @@ class ControlServer(unittest.TestCase):
         self.commands.publish({"time": 1.5})
         self.assertEqual(self.request("GET", "/state"), (200, {"time": 1.5}))
 
+    def test_world_put_returns_stable_ids_and_queues_load(self):
+        status, body = self.request("PUT", "/world", WORLD)
+        self.assertEqual(status, 202)
+        self.assertEqual([entity["id"] for entity in body["entities"]], ["ownship", "buoy_1"])
+        self.assertEqual([camera["id"] for camera in body["cameras"]], ["Forward"])
+        self.assertEqual(body["cameras"][0]["resolution"], [640, 360])
+        self.assertEqual(body["seed"], 7)
+        ((command_id, command),) = list(self.commands.drain())
+        self.assertEqual(command_id, body["id"])
+        self.assertEqual(command["type"], "load_world")
+        self.assertEqual(self.commands.entity_ids, ["ownship", "buoy_1"])
+
+    def test_resource_patches_and_step_render_reset(self):
+        self.request("PUT", "/world", WORLD)
+        list(self.commands.drain())
+        status, body = self.request(
+            "PATCH",
+            "/entities/ownship/pose",
+            {"position": [1, 2, 0.3], "orientation": [0, 0, 0, 1]},
+        )
+        self.assertEqual(status, 202)
+        self.assertEqual(self.request("PATCH", "/cameras/Forward", {"focal_length": 24})[0], 202)
+        self.assertEqual(self.request("PATCH", "/environment", {"current": [0.2, 0, 0]})[0], 202)
+        self.assertEqual(self.request("POST", "/step", {"dt": 0.1, "poses": [], "cameras": ["Forward"]})[0], 202)
+        self.assertEqual(self.request("POST", "/render", {"cameras": ["Forward"]})[0], 202)
+        self.assertEqual(self.request("POST", "/reset")[0], 202)
+        kinds = [command["type"] for _, command in self.commands.drain()]
+        self.assertEqual(kinds, ["set_entity_pose", "set_camera", "set_environment", "step", "render", "reset"])
+
+    def test_rejects_unsupported_environment_and_resolution_changes(self):
+        self.request("PUT", "/world", WORLD)
+        list(self.commands.drain())
+        status, body = self.request("PATCH", "/environment", {"wind": [1, 0, 0]})
+        self.assertEqual(status, 400)
+        self.assertIn("Unsupported", body["error"])
+        status, body = self.request("PATCH", "/cameras/Forward", {"resolution": [128, 128]})
+        self.assertEqual(status, 400)
+        self.assertIn("resolution", body["error"])
+        self.assertEqual(self.request("PATCH", "/entities/missing/pose", {"position": [0, 0, 0], "orientation": [0, 0, 0, 1]})[0], 404)
+        self.assertEqual(list(self.commands.drain()), [])
+
+    def test_completed_observation_frames_are_binary_downloads(self):
+        command_id = self.commands.submit({"type": "render", "cameras": ["Forward"]})
+        paths = self.commands.store_frames(command_id, {"Forward": {"rgb": b"\x89PNG", "depth": b"NPY"}})
+        self.commands.complete(command_id, observation={"time": 0.0, "cameras": paths})
+        status, body = self.request("GET", f"/commands/{command_id}")
+        self.assertEqual(status, 200)
+        self.assertEqual(body["observation"]["cameras"]["Forward"]["rgb"], f"/frames/{command_id}/Forward/rgb")
+        connection = HTTPConnection("127.0.0.1", self.server.server_address[1], timeout=5)
+        self.addCleanup(connection.close)
+        connection.request("GET", body["observation"]["cameras"]["Forward"]["rgb"])
+        response = connection.getresponse()
+        self.assertEqual((response.status, response.getheader("Content-Type"), response.read()), (200, "image/png", b"\x89PNG"))
+
+
+WORLD = {
+    "seed": 7,
+    "entities": [
+        {"id": "ownship", "kind": "vessel", "position": [0, 0, 0.3], "orientation": [0, 0, 0, 1]},
+        {"id": "buoy_1", "kind": "obstacle", "position": [10, -4, 0.3], "orientation": [0, 0, 0, 1]},
+    ],
+    "cameras": [
+        {
+            "id": "Forward",
+            "entity_id": "ownship",
+            "position": [1.2, 0, 1],
+            "target": [12, 0, 0.5],
+            "focal_length": 18,
+            "resolution": [640, 360],
+        }
+    ],
+    "environment": {
+        "current": [0, 0, 0],
+        "sun_intensity": 2500,
+        "sky_intensity": 700,
+        "sun_rotation": [-35, -25, 0],
+    },
+}
+
 
 if __name__ == "__main__":
     unittest.main()

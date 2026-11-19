@@ -85,10 +85,67 @@ class WorldCommands(unittest.TestCase):
     def test_snapshot_is_json_ready(self):
         state = self.world.snapshot(np.float32(2.5), True, (self.body.get_transforms()[0], self.body.get_velocities()[0]))
         self.assertEqual(state["boat"]["position"], [1.0, 2.0, 0.30000001192092896])
+        self.assertEqual(state["entities"]["boat"]["position"], state["boat"]["position"])
         self.assertIs(type(state["time"]), float)
         self.assertIsNone(self.world.snapshot(0, False)["boat"])
         state["cameras"]["Forward"]["focal_length"] = 1
         self.assertNotEqual(self.world.cameras["Forward"]["focal_length"], 1)
+
+    def test_load_world_entity_pose_step_and_reset_episode(self):
+        from commands import parse_world
+
+        command, catalog = parse_world(
+            {
+                "seed": 3,
+                "entities": [
+                    {"id": "ownship", "kind": "vessel", "position": [4, 1, 0.3], "orientation": [0, 0, 0, 1]},
+                    {"id": "buoy_1", "kind": "obstacle", "position": [8, 0, 0.3], "orientation": [0, 0, 0, 1]},
+                ],
+                "cameras": [
+                    {
+                        "id": "Forward",
+                        "entity_id": "ownship",
+                        "position": [1.2, 0, 1],
+                        "target": [12, 0, 0.5],
+                        "focal_length": 18,
+                        "resolution": [640, 360],
+                    }
+                ],
+                "environment": {
+                    "current": [0.1, 0, 0],
+                    "sun_intensity": 800,
+                    "sky_intensity": 700,
+                    "sun_rotation": [-35, -25, 0],
+                },
+            }
+        )
+        self.world.apply(command, self.body, self.indices)
+        self.assertEqual(catalog["entities"][0]["id"], "ownship")
+        self.assertEqual(self.world.entities["buoy_1"]["kind"], "obstacle")
+        np.testing.assert_allclose(self.body.transforms[0][:3], [4, 1, 0.3])
+        self.world.apply(
+            {
+                "type": "set_entity_pose",
+                "entity_id": "buoy_1",
+                "position": [9, 2, 0.3],
+                "orientation": [0, 0, 0, 1],
+            },
+            self.body,
+            self.indices,
+        )
+        self.assertEqual(self.world.entities["buoy_1"]["position"], [9, 2, 0.3])
+        observation = self.world.apply(
+            {"type": "step", "dt": 1 / 120, "poses": [], "cameras": ["Forward"]},
+            self.body,
+            self.indices,
+            command_id=9,
+        )
+        self.assertAlmostEqual(self.world.time, 1 / 120)
+        self.assertEqual(observation["cameras"]["Forward"]["rgb"], "/frames/9/Forward/rgb")
+        self.world.apply({"type": "reset"}, self.body, self.indices)
+        self.assertEqual(self.world.episode, 2)
+        self.assertEqual(self.world.time, 0.0)
+        self.assertEqual(self.world.entities["buoy_1"]["position"], [8, 0, 0.3])
 
 
 if __name__ == "__main__":

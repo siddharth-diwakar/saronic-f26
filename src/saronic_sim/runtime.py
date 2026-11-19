@@ -28,7 +28,7 @@ def run(config, output, stream=False, duration=None, throttle=0, steering=0, rec
         from hydrodynamics import forces
         from cameras import CameraRecorder
         from physics import attach_boat
-        from commands import CommandError, CommandQueue, start_server
+        from commands import CommandError, CommandQueue, pose_transform, start_server
         from world import World
         from isaacsim.core.experimental.utils import stage as stage_utils
         np.random.seed(config["simulation"]["seed"])
@@ -76,12 +76,12 @@ def run(config, output, stream=False, duration=None, throttle=0, steering=0, rec
                     ui.Button("Reset boat", clicked_fn=lambda: controls.update(reset=True))
                     ui.Label("Use the toolbar Play/Pause buttons to pause.")
             select_camera("/World/Overview")
-        if record:
+        if record or control_port:
             recorder = CameraRecorder(config, paths, run_output)
         world = World(stage, config, paths, controls, sliders)
         commands = None
         if control_port:
-            commands = CommandQueue()
+            commands = CommandQueue(camera_names=[c["name"] for c in config["cameras"]], entity_ids=["boat"])
             server = start_server(commands, [c["name"] for c in config["cameras"]], control_port)
             print(f"HarborControl: listening on http://127.0.0.1:{control_port}", flush=True)
         # Warm up assets, render products, and streaming before marking readiness.
@@ -93,10 +93,51 @@ def run(config, output, stream=False, duration=None, throttle=0, steering=0, rec
         stopped = False
         wall_start = time.monotonic()
 
+        def run_physics_step(render):
+            nonlocal elapsed, step
+            if controls["reset"]:
+                vessel = world._primary_vessel()
+                entity = world.entities.get(vessel) if vessel else None
+                if entity:
+                    transform = pose_transform(
+                        body.get_transforms()[0], entity["position"], orientation=entity["orientation"]
+                    )
+                    body.set_transforms(np.array([transform], dtype=np.float32), indices)
+                else:
+                    body.set_transforms(initial_transform, indices)
+                body.set_velocities(np.zeros((1, 6), dtype=np.float32), indices)
+                controls["reset"] = False
+            transform = body.get_transforms()[0].copy()
+            velocity = body.get_velocities()[0].copy()
+            if not np.isfinite(transform).all() or not np.isfinite(velocity).all():
+                raise RuntimeError("Boat physics became non-finite")
+            force, torque = forces(config, transform[:3], transform[3:], velocity, controls["throttle"], controls["steering"])
+            body.apply_forces_and_torques_at_position(np.array([force], dtype=np.float32), np.array([torque], dtype=np.float32), None, indices, True)
+            SimulationManager.step(update_fabric=SimulationManager.is_fabric_enabled())
+            if render:
+                RenderingManager.render()
+                if commands:
+                    publish_state()
+            elapsed += dt
+            step += 1
+
         def apply_commands():
             for command_id, command in commands.drain():
                 try:
-                    world.apply(command, None if stopped else body, indices)
+                    observation = world.apply(command, None if stopped else body, indices, command_id=command_id)
+                    if command["type"] == "load_world":
+                        commands.entity_ids = [entity["id"] for entity in command["entities"]]
+                        commands.camera_ids = [camera["id"] for camera in command["cameras"]]
+                    if command["type"] == "step" and not stopped:
+                        ticks = max(1, int(round(command["dt"] * config["simulation"]["physics_hz"])))
+                        for index in range(ticks):
+                            run_physics_step(render=index == ticks - 1)
+                    elif command["type"] == "render":
+                        RenderingManager.render()
+                    if command["type"] in {"step", "render"} and recorder:
+                        grabbed = recorder.grab(command.get("cameras"))
+                        cameras = commands.store_frames(command_id, grabbed)
+                        observation = {**(observation or {}), "cameras": cameras, "time": float(elapsed)}
                 except CommandError as error:
                     commands.complete(command_id, str(error))
                     continue
@@ -105,7 +146,7 @@ def run(config, output, stream=False, duration=None, throttle=0, steering=0, rec
                     traceback.print_exc()
                     commands.complete(command_id, f"Internal error: {error}")
                     continue
-                commands.complete(command_id)
+                commands.complete(command_id, observation=observation)
                 # Replayable record of what changed during the run, in simulation time.
                 with (run_output / "commands.jsonl").open("a") as log:
                     log.write(json.dumps({"time": elapsed, "id": command_id, **command}) + "\n")
@@ -131,27 +172,12 @@ def run(config, output, stream=False, duration=None, throttle=0, steering=0, rec
                     time.sleep(.01)
                     wall_start = time.monotonic() - elapsed
                     continue
-                if controls["reset"]:
-                    body.set_transforms(initial_transform, indices)
-                    body.set_velocities(np.zeros((1, 6), dtype=np.float32), indices)
-                    controls["reset"] = False
-                transform = body.get_transforms()[0].copy()
-                velocity = body.get_velocities()[0].copy()
-                if not np.isfinite(transform).all() or not np.isfinite(velocity).all():
-                    raise RuntimeError("Boat physics became non-finite")
-                force, torque = forces(config, transform[:3], transform[3:], velocity, controls["throttle"], controls["steering"])
-                body.apply_forces_and_torques_at_position(np.array([force], dtype=np.float32), np.array([torque], dtype=np.float32), None, indices, True)
                 render = step % render_every == 0
-                SimulationManager.step(update_fabric=SimulationManager.is_fabric_enabled())
-                if render:
-                    RenderingManager.render()
-                    if commands:
-                        publish_state()
-                    if step == 0:
-                        ready.write_text("Harbor runtime ready\n")
-                        print(f"HarborReady: first physics step completed; output={run_output}", flush=True)
-                elapsed += dt
-                step += 1
+                first_step = step == 0
+                run_physics_step(render)
+                if render and first_step:
+                    ready.write_text("Harbor runtime ready\n")
+                    print(f"HarborReady: first physics step completed; output={run_output}", flush=True)
                 if render and elapsed >= next_record:
                     transform = body.get_transforms()[0].copy()
                     velocity = body.get_velocities()[0].copy()
